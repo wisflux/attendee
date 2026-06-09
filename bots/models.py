@@ -743,7 +743,7 @@ class TranscriptionSettings:
         return self._settings.get("sarvam", {}).get("model", None)
 
     def elevenlabs_model_id(self):
-        return self._settings.get("elevenlabs", {}).get("model_id", "scribe_v1")
+        return self._settings.get("elevenlabs", {}).get("model_id", "scribe_v2")
 
     def elevenlabs_language_code(self):
         return self._settings.get("elevenlabs", {}).get("language_code", None)
@@ -2299,9 +2299,37 @@ class Recording(models.Model):
             return self.file.url
 
         # Generate a temporary signed URL that expires in 30 minutes (1800 seconds)
+        # If a browser-accessible S3 endpoint is configured (AWS_S3_ENDPOINT_URL),
+        # use a separate client pointing at that endpoint so the signature is valid.
+        import os as _os
+
+        # Determine correct content type from file extension for browser playback
+        content_type_map = {".mp4": "video/mp4", ".mp3": "audio/mpeg", ".webm": "video/webm"}
+        file_ext = _os.path.splitext(self.file.name)[1].lower()
+        response_content_type = content_type_map.get(file_ext)
+
+        params = {"Bucket": self.file.storage.bucket_name, "Key": self.file.name}
+        if response_content_type:
+            params["ResponseContentType"] = response_content_type
+
+        public_endpoint = _os.getenv("AWS_S3_ENDPOINT_URL")
+        if public_endpoint:
+            import boto3
+            public_client = boto3.client(
+                "s3",
+                endpoint_url=public_endpoint,
+                aws_access_key_id=_os.getenv("AWS_ACCESS_KEY_ID"),
+                aws_secret_access_key=_os.getenv("AWS_SECRET_ACCESS_KEY"),
+                region_name=_os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
+            )
+            return public_client.generate_presigned_url(
+                "get_object",
+                Params=params,
+                ExpiresIn=1800,
+            )
         return self.file.storage.bucket.meta.client.generate_presigned_url(
             "get_object",
-            Params={"Bucket": self.file.storage.bucket_name, "Key": self.file.name},
+            Params=params,
             ExpiresIn=1800,
         )
 

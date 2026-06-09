@@ -395,7 +395,7 @@ TRANSCRIPTION_SETTINGS_SCHEMA = {
         "elevenlabs": {
             "type": "object",
             "properties": {
-                "model_id": {"type": "string", "description": "The ElevenLabs model to use for transcription", "enum": ["scribe_v1", "scribe_v1_experimental"]},
+                "model_id": {"type": "string", "description": "The ElevenLabs model to use for transcription", "enum": ["scribe_v1", "scribe_v1_experimental", "scribe_v2"]},
                 "language_code": {
                     "type": "string",
                     "description": "An ISO-639-1 or ISO-639-3 language_code corresponding to the language of the audio file.",
@@ -403,7 +403,7 @@ TRANSCRIPTION_SETTINGS_SCHEMA = {
                 },
                 "tag_audio_events": {"type": "boolean", "description": "Whether to tag audio events like 'laughter' in the transcription."},
             },
-            "required": ["model_id"],
+            "required": [],
             "additionalProperties": False,
         },
         "kyutai": {
@@ -648,7 +648,7 @@ class RTMPSettingsJSONField(serializers.JSONField):
 
 
 BOT_RECORDING_SETTINGS_DEFAULT_VALUES = {
-    "format": RecordingFormats.MP4,
+    "format": RecordingFormats.MP3,
     "view": RecordingViews.SPEAKER_VIEW,
     "resolution": RecordingResolutions.HD_1080P,
     "record_chat_messages_when_paused": False,
@@ -1376,9 +1376,9 @@ class CreateBotSerializer(BotValidationMixin, serializers.Serializer):
                 else:
                     value = {"deepgram": {"language": "multi"}}
             elif meeting_type == MeetingTypes.GOOGLE_MEET:
-                value = {"meeting_closed_captions": {}}
+                value = {"elevenlabs": {}}
             elif meeting_type == MeetingTypes.TEAMS:
-                value = {"meeting_closed_captions": {}}
+                value = {"elevenlabs": {}}
             else:
                 return None
 
