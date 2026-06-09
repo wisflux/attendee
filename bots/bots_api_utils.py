@@ -284,11 +284,35 @@ def create_bot(data: dict, source: BotCreationSource, project: Project) -> tuple
                 calendar_event=calendar_event,
             )
 
+            # Determine transcription provider, with credential-based fallback
+            selected_provider = transcription_provider_from_bot_creation_data(serializer.validated_data)
+
+            # If a third-party provider was selected (e.g. ElevenLabs), verify
+            # that matching credentials exist. If not, fall back to platform captions.
+            provider_credential_map = {
+                TranscriptionProviders.ELEVENLABS: Credentials.CredentialTypes.ELEVENLABS,
+                TranscriptionProviders.DEEPGRAM: Credentials.CredentialTypes.DEEPGRAM,
+                TranscriptionProviders.OPENAI: Credentials.CredentialTypes.OPENAI,
+                TranscriptionProviders.GLADIA: Credentials.CredentialTypes.GLADIA,
+                TranscriptionProviders.ASSEMBLY_AI: Credentials.CredentialTypes.ASSEMBLY_AI,
+                TranscriptionProviders.SARVAM: Credentials.CredentialTypes.SARVAM,
+            }
+            required_credential_type = provider_credential_map.get(selected_provider)
+            if required_credential_type is not None:
+                has_credentials = project.credentials.filter(credential_type=required_credential_type).exists()
+                if not has_credentials:
+                    logger.info(f"No credentials found for provider {selected_provider}, falling back to platform closed captions")
+                    selected_provider = TranscriptionProviders.CLOSED_CAPTION_FROM_PLATFORM
+                    # Also update the bot settings so the stored settings match
+                    settings["transcription_settings"] = {"meeting_closed_captions": {}}
+                    bot.settings = settings
+                    bot.save()
+
             Recording.objects.create(
                 bot=bot,
                 recording_type=bot.recording_type(),
                 transcription_type=TranscriptionTypes.NON_REALTIME,
-                transcription_provider=transcription_provider_from_bot_creation_data(serializer.validated_data),
+                transcription_provider=selected_provider,
                 is_default_recording=True,
             )
 

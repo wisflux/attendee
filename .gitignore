@@ -5,7 +5,9 @@ py-zoom-meeting-sdk/
 
 venv
 env.sh
-
+CLAUDE.md
+QUICKSTART.md
+MODULE.md
 ### OSX ###
 .DS_Store
 .AppleDouble
