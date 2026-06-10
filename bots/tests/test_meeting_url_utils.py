@@ -3,7 +3,7 @@ import base64
 import json
 import unittest
 
-from bots.meeting_url_utils import MeetingTypes, domain_and_subdomain_from_url, meeting_type_from_url, normalize_meeting_url, parse_zoom_join_url, parse_zoom_registrant_token, root_domain_from_url
+from bots.meeting_url_utils import MeetingTypes, canonical_meeting_id, domain_and_subdomain_from_url, meeting_type_from_url, normalize_meeting_url, parse_zoom_join_url, parse_zoom_registrant_token, root_domain_from_url
 
 
 class TestMeetingUrlUtils(unittest.TestCase):
@@ -100,6 +100,87 @@ class TestMeetingUrlUtils(unittest.TestCase):
         self.assertEqual(meeting_id, "111222333")
         self.assertEqual(password, "AbC9xYpQ2LmN7RkT5sVuH4ZbJe1DfG.1")
         self.assertEqual(registrant_token, "ZkPqN8f2LrS4XyT6wVaE9mHuCdJg5QbA1sDoRtUvWxY.DQkAAAAATESTTOKEN1234567890AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+
+
+class TestCanonicalMeetingId(unittest.TestCase):
+    """Corpus tests for canonical_meeting_id: every link variant of the same meeting must map to
+    the same fingerprint (used to enforce one active bot per meeting per project)."""
+
+    def assert_all_map_to(self, expected_fingerprint, url_variants):
+        for url in url_variants:
+            self.assertEqual(canonical_meeting_id(url), expected_fingerprint, f"variant did not match: {url}")
+
+    def test_zoom_variants_same_meeting(self):
+        self.assert_all_map_to(
+            "zoom:84278559171",
+            [
+                "https://us05web.zoom.us/j/84278559171?pwd=6MKZjG0RFpo6ydbDGW30fRpP7yCTcb.1",
+                "https://zoom.us/j/84278559171",
+                "https://us05web.zoom.com/j/84278559171?pwd=6MKZjG0RFpo6ydbDGW30fRpP7yCTcb.1",
+                # per-registrant tk token must not change the meeting identity
+                "https://us05web.zoom.us/j/84278559171?pwd=6MKZjG0RFpo6ydbDGW30fRpP7yCTcb.1&tk=ZkPqN8f2LrS4XyT6wVaE9mHuCdJg5QbA1sDoRtUvWxY.TESTTOKEN",
+                "zoom.us/j/84278559171",
+                # webinar path variant
+                "https://zoom.us/w/84278559171?pwd=6MKZjG0RFpo6ydbDGW30fRpP7yCTcb.1",
+            ],
+        )
+
+    def test_google_meet_variants_same_meeting(self):
+        self.assert_all_map_to(
+            "meet:rhg-phjh-vrq",
+            [
+                "https://meet.google.com/rhg-phjh-vrq",
+                "meet.google.com/rhg-phjh-vrq?authuser=0&hs=122",
+                "https://meet.google.com/rhg-phjh-vrq?pli=1",
+            ],
+        )
+
+    def test_teams_meetup_join_variants_same_meeting(self):
+        direct = 'https://teams.microsoft.com/l/meetup-join/19%3ameeting_NzI4MDc4%40thread.v2/0?context=%7b%22Tid%22%3a%22tenant-111%22%2c%22Oid%22%3a%22organizer-222%22%7d'
+        launcher = 'https://teams.microsoft.com/dl/launcher/launcher.html?url=/_#/l/meetup-join/19:meeting_NzI4MDc4@thread.v2/0?context={"Tid":"tenant-111","Oid":"organizer-222"}&type=meetup-join&directDl=true'
+        v2 = 'https://teams.microsoft.com/v2/?meetingjoin=true#/l/meetup-join/19:meeting_NzI4MDc4@thread.v2/0?context={"Tid":"tenant-111","Oid":"organizer-222"}&anon=true'
+        self.assert_all_map_to("teams:19:meeting_NzI4MDc4@thread.v2:tenant-111:organizer-222", [direct, launcher, v2])
+
+    def test_teams_meet_family_variants_same_meeting(self):
+        # passcode (p=) must not change the meeting identity
+        self.assert_all_map_to(
+            "teams-meet:9512345678901",
+            [
+                "https://teams.live.com/meet/9512345678901?p=AbCdEfGh123",
+                "https://teams.live.com/dl/launcher/launcher.html?url=/_#/meet/9512345678901?p=AbCdEfGh123&anon=true&type=meet",
+            ],
+        )
+
+    def test_different_meetings_get_different_fingerprints(self):
+        self.assertNotEqual(canonical_meeting_id("https://zoom.us/j/84278559171"), canonical_meeting_id("https://zoom.us/j/99999999999"))
+        self.assertNotEqual(canonical_meeting_id("https://meet.google.com/rhg-phjh-vrq"), canonical_meeting_id("https://meet.google.com/abc-defg-hij"))
+        self.assertNotEqual(canonical_meeting_id("https://teams.live.com/meet/9512345678901?p=a"), canonical_meeting_id("https://teams.live.com/meet/1112223334445?p=a"))
+
+    def test_platforms_never_collide(self):
+        fingerprints = [
+            canonical_meeting_id("https://zoom.us/j/84278559171"),
+            canonical_meeting_id("https://meet.google.com/rhg-phjh-vrq"),
+            canonical_meeting_id("https://teams.live.com/meet/9512345678901?p=a"),
+        ]
+        self.assertEqual(len(set(fingerprints)), len(fingerprints))
+
+    def test_unsupported_or_garbage_urls_return_none(self):
+        self.assertIsNone(canonical_meeting_id("https://company.webex.com/meet/room123"))
+        self.assertIsNone(canonical_meeting_id("not a url at all"))
+        self.assertIsNone(canonical_meeting_id(""))
+        self.assertIsNone(canonical_meeting_id(None))
+
+    def test_google_meet_reserved_paths_get_no_fingerprint(self):
+        # /lookup/<id> links are DIFFERENT meetings that normalize to the same bare "lookup" path;
+        # fingerprinting them would merge unrelated meetings into one dedup slot (false positive).
+        self.assertIsNone(canonical_meeting_id("https://meet.google.com/lookup/abc123xyz"))
+        self.assertIsNone(canonical_meeting_id("https://meet.google.com/lookup/totally-different"))
+        self.assertIsNone(canonical_meeting_id("https://meet.google.com/new"))
+
+    def test_zoom_links_attendee_cannot_normalize_get_no_fingerprint(self):
+        # Vanity/personal links have no numeric id; normalize_meeting_url rejects them, so bot
+        # creation fails before dedup is ever consulted — fingerprint must agree and return None.
+        self.assertIsNone(canonical_meeting_id("https://zoom.us/my/rahulkaushik"))
 
 
 if __name__ == "__main__":
