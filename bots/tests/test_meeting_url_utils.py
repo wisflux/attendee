@@ -136,7 +136,7 @@ class TestCanonicalMeetingId(unittest.TestCase):
         )
 
     def test_teams_meetup_join_variants_same_meeting(self):
-        direct = 'https://teams.microsoft.com/l/meetup-join/19%3ameeting_NzI4MDc4%40thread.v2/0?context=%7b%22Tid%22%3a%22tenant-111%22%2c%22Oid%22%3a%22organizer-222%22%7d'
+        direct = "https://teams.microsoft.com/l/meetup-join/19%3ameeting_NzI4MDc4%40thread.v2/0?context=%7b%22Tid%22%3a%22tenant-111%22%2c%22Oid%22%3a%22organizer-222%22%7d"
         launcher = 'https://teams.microsoft.com/dl/launcher/launcher.html?url=/_#/l/meetup-join/19:meeting_NzI4MDc4@thread.v2/0?context={"Tid":"tenant-111","Oid":"organizer-222"}&type=meetup-join&directDl=true'
         v2 = 'https://teams.microsoft.com/v2/?meetingjoin=true#/l/meetup-join/19:meeting_NzI4MDc4@thread.v2/0?context={"Tid":"tenant-111","Oid":"organizer-222"}&anon=true'
         self.assert_all_map_to("teams:19:meeting_NzI4MDc4@thread.v2:tenant-111:organizer-222", [direct, launcher, v2])
