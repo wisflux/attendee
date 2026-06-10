@@ -646,6 +646,27 @@ class BotStates(models.IntegerChoices):
     def pre_meeting_states(cls):
         return [cls.READY, cls.SCHEDULED, cls.STAGED]
 
+    @classmethod
+    def holds_meeting_slot_states(cls):
+        # States in which a bot is in (or heading to) its meeting and therefore holds the
+        # one-active-bot-per-meeting slot (unique_bot_meeting_dedup_key constraint). Deliberately
+        # excludes POST_PROCESSING: a bot uploading/transcribing has already left the meeting and
+        # must not block a replacement bot from joining it.
+        return [
+            cls.READY,
+            cls.JOINING,
+            cls.JOINED_NOT_RECORDING,
+            cls.JOINED_RECORDING,
+            cls.LEAVING,
+            cls.WAITING_ROOM,
+            cls.SCHEDULED,
+            cls.STAGED,
+            cls.JOINED_RECORDING_PAUSED,
+            cls.JOINING_BREAKOUT_ROOM,
+            cls.LEAVING_BREAKOUT_ROOM,
+            cls.JOINED_RECORDING_PERMISSION_DENIED,
+        ]
+
 
 class RecordingFormats(models.TextChoices):
     MP4 = "mp4"
@@ -848,6 +869,7 @@ class Bot(models.Model):
 
     join_at = models.DateTimeField(null=True, blank=True, help_text="The time the bot should join the meeting")
     deduplication_key = models.CharField(max_length=1024, null=True, blank=True, help_text="Optional key for deduplicating bots")
+    meeting_dedup_key = models.CharField(max_length=512, null=True, blank=True, editable=False, help_text="Internal canonical meeting fingerprint used to enforce one active bot per meeting per project")
     calendar_event = models.ForeignKey(CalendarEvent, on_delete=models.SET_NULL, null=True, blank=True, related_name="bots")
 
     zoom_rtms_stream_id = models.CharField(max_length=255, null=True, blank=True)
@@ -1207,6 +1229,11 @@ class Bot(models.Model):
         # Within a project, we don't want to allow bots that aren't in apost-meeting state with the same deduplication key.
         constraints = [
             models.UniqueConstraint(fields=["project", "deduplication_key"], name="unique_bot_deduplication_key", condition=~models.Q(state__in=BotStates.post_meeting_states())),
+            # One active bot per meeting per project: while a bot is in (or heading to) a meeting,
+            # no second bot may be created for the same canonical meeting fingerprint. Rows with a
+            # NULL meeting_dedup_key (app sessions, pre-feature bots, unrecognized URLs) never
+            # participate in the constraint.
+            models.UniqueConstraint(fields=["project", "meeting_dedup_key"], name="unique_bot_meeting_dedup_key", condition=models.Q(state__in=BotStates.holds_meeting_slot_states())),
         ]
 
 
