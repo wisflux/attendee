@@ -2318,6 +2318,7 @@ class Recording(models.Model):
         public_endpoint = _os.getenv("AWS_S3_ENDPOINT_URL")
         if public_endpoint:
             import boto3
+
             public_client = boto3.client(
                 "s3",
                 endpoint_url=public_endpoint,
