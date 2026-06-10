@@ -271,3 +271,46 @@ def parse_zoom_registrant_token(join_url):
     registrant_token = query_params.get("tk", [None])[0]
 
     return registrant_token
+
+
+TEAMS_MEETUP_JOIN_CANONICAL_RE = re.compile(r"/l/meetup-join/([^/]+)/[^?]+\?context=.*\"Tid\":\"([^\"]+)\".*\"Oid\":\"([^\"]+)\"")
+TEAMS_MEET_CANONICAL_RE = re.compile(r"/meet/([^?]+)")
+# Standard Google Meet meeting code (xxx-yyyy-zzz). Reserved paths like /lookup/<id> or /new
+# normalize to a bare keyword ("lookup", "new") — fingerprinting those would wrongly merge
+# DIFFERENT meetings into one dedup slot, so anything not matching this pattern gets no fingerprint.
+GOOGLE_MEET_CODE_RE = re.compile(r"^[a-z]{3}-[a-z]{4}-[a-z]{3}$")
+
+
+# Returns a stable, format-independent identifier for the meeting behind a URL, or None if the
+# URL is not a recognized meeting URL. Every link variant of the same meeting must map to the
+# same string, so per-caller noise is dropped: Zoom pwd/tk and subdomain, Meet query params,
+# Teams launcher/light-meetings wrappers. Used to enforce one active bot per meeting per project.
+def canonical_meeting_id(url):
+    meeting_type, normalized_url = normalize_meeting_url(url)
+    if not normalized_url:
+        return None
+
+    if meeting_type == MeetingTypes.ZOOM:
+        meeting_id, _ = parse_zoom_join_url(normalized_url)
+        if not meeting_id:
+            return None
+        return f"zoom:{meeting_id}"
+
+    if meeting_type == MeetingTypes.GOOGLE_MEET:
+        meeting_code = urlparse(normalized_url).path.strip("/")
+        if not GOOGLE_MEET_CODE_RE.match(meeting_code):
+            return None
+        return f"meet:{meeting_code}"
+
+    if meeting_type == MeetingTypes.TEAMS:
+        meetup_join_match = TEAMS_MEETUP_JOIN_CANONICAL_RE.search(normalized_url)
+        if meetup_join_match:
+            conversation_id, tenant_id, organizer_id = meetup_join_match.groups()
+            return f"teams:{conversation_id}:{tenant_id}:{organizer_id}"
+
+        # teams.live.com / teams.microsoft.com "/meet/<id>?p=<passcode>" family; passcode is dropped
+        meet_match = TEAMS_MEET_CANONICAL_RE.search(urlparse(normalized_url).path)
+        if meet_match:
+            return f"teams-meet:{meet_match.group(1)}"
+
+    return None
