@@ -491,6 +491,13 @@ def get_transcription_via_elevenlabs(utterance):
         response = requests.post(url, headers=headers, files=files, data=data if data else None)
 
         if response.status_code == 401:
+            logger.warning(f"ElevenLabs returned 401 for utterance {utterance.id}: {str(response.text)[:300]}")
+            # ElevenLabs (especially the free tier) intermittently returns 401 even for valid keys;
+            # the identical request usually succeeds on retry. Treat the first few 401s as a
+            # retryable failure so a transient blip doesn't permanently fail the utterance, and
+            # only declare the credentials invalid once the retries are exhausted.
+            if utterance.transcription_attempt_count < 3:
+                return None, {"reason": TranscriptionFailureReasons.TRANSCRIPTION_REQUEST_FAILED, "status_code": 401, "provider": "elevenlabs", "transient_auth": True}
             return None, {"reason": TranscriptionFailureReasons.CREDENTIALS_INVALID}
 
         if response.status_code == 429:

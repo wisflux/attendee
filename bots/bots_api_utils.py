@@ -287,8 +287,13 @@ def create_bot(data: dict, source: BotCreationSource, project: Project) -> tuple
             # Determine transcription provider, with credential-based fallback
             selected_provider = transcription_provider_from_bot_creation_data(serializer.validated_data)
 
-            # If a third-party provider was selected (e.g. ElevenLabs), verify
-            # that matching credentials exist. If not, fall back to platform captions.
+            # If a third-party provider was selected (e.g. ElevenLabs) and its credentials are
+            # missing, fall back to free platform captions instead of failing -- but ONLY when the
+            # provider was chosen by default (the caller did not pass transcription_settings).
+            # We never override an explicitly-requested provider: silently discarding the caller's
+            # settings is surprising; an explicit request with missing credentials should instead
+            # surface as a clear failure at transcription time.
+            transcription_settings_explicitly_provided = data.get("transcription_settings") is not None
             provider_credential_map = {
                 TranscriptionProviders.ELEVENLABS: Credentials.CredentialTypes.ELEVENLABS,
                 TranscriptionProviders.DEEPGRAM: Credentials.CredentialTypes.DEEPGRAM,
@@ -298,10 +303,10 @@ def create_bot(data: dict, source: BotCreationSource, project: Project) -> tuple
                 TranscriptionProviders.SARVAM: Credentials.CredentialTypes.SARVAM,
             }
             required_credential_type = provider_credential_map.get(selected_provider)
-            if required_credential_type is not None:
+            if required_credential_type is not None and not transcription_settings_explicitly_provided:
                 has_credentials = project.credentials.filter(credential_type=required_credential_type).exists()
                 if not has_credentials:
-                    logger.info(f"No credentials found for provider {selected_provider}, falling back to platform closed captions")
+                    logger.info(f"No credentials found for default provider {selected_provider}, falling back to platform closed captions")
                     selected_provider = TranscriptionProviders.CLOSED_CAPTION_FROM_PLATFORM
                     # Also update the bot settings so the stored settings match
                     settings["transcription_settings"] = {"meeting_closed_captions": {}}
