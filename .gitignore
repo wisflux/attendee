@@ -2,7 +2,7 @@
 compose.yaml
 
 py-zoom-meeting-sdk/
-
+docs/one_bot_per_meeting/
 venv
 env.sh
 CLAUDE.md
