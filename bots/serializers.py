@@ -1374,7 +1374,7 @@ class CreateBotSerializer(BotValidationMixin, serializers.Serializer):
                 if use_zoom_web_adapter:
                     value = {"meeting_closed_captions": {}}
                 else:
-                    value = {"deepgram": {"language": "multi"}}
+                    value = {"elevenlabs": {}}
             elif meeting_type == MeetingTypes.GOOGLE_MEET:
                 value = {"elevenlabs": {}}
             elif meeting_type == MeetingTypes.TEAMS:

@@ -893,12 +893,17 @@ class ZoomBotAdapter(BotAdapter):
 
         current_time = datetime.utcnow()
         self.last_audio_received_at = time.time()
-        self.add_audio_chunk_callback(node_id, current_time, data.GetBuffer())
+        # Guard against a missing callback (e.g. closed-captions config sets no per-participant
+        # audio sink). This runs inside a native SDK callback, so a Python exception here would
+        # call C++ terminate() and SIGABRT the whole worker process.
+        if self.add_audio_chunk_callback:
+            self.add_audio_chunk_callback(node_id, current_time, data.GetBuffer())
 
     def add_mixed_audio_chunk_convert_to_bytes(self, data):
         if self.recording_is_paused:
             return
-        self.add_mixed_audio_chunk_callback(chunk=data.GetBuffer())
+        if self.add_mixed_audio_chunk_callback:
+            self.add_mixed_audio_chunk_callback(chunk=data.GetBuffer())
 
     def handle_recording_permission_granted(self):
         if not self.recording_permission_granted:

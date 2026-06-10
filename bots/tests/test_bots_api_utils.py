@@ -8,7 +8,7 @@ from django.utils import timezone
 from accounts.models import Organization
 from bots.bots_api_utils import BotCreationSource, build_internal_site_url, build_site_url, create_bot, create_webhook_subscription, patch_bot, validate_bot_concurrency_limit, validate_meeting_url_and_credentials
 from bots.calendars_api_utils import create_calendar
-from bots.models import Bot, BotEventManager, BotEventTypes, BotLoginGroup, BotLoginPlatform, BotStates, CalendarEvent, CalendarPlatform, Project, TranscriptionProviders, WebhookSubscription, WebhookTriggerTypes, ZoomOAuthApp
+from bots.models import Bot, BotEventManager, BotEventTypes, BotLoginGroup, BotLoginPlatform, BotStates, CalendarEvent, CalendarPlatform, Credentials, Project, TranscriptionProviders, WebhookSubscription, WebhookTriggerTypes, ZoomOAuthApp
 
 
 class TestBuildSiteUrl(TestCase):
@@ -107,12 +107,13 @@ class TestCreateBot(TestCase):
 
     def test_create_zoom_bot_with_default_settings(self):
         ZoomOAuthApp.objects.create(project=self.project, client_id="123")
+        # Native Zoom now defaults to ElevenLabs (same provider as Google Meet / Teams).
+        Credentials.objects.create(project=self.project, credential_type=Credentials.CredentialTypes.ELEVENLABS)
         bot, error = create_bot(data={"meeting_url": "https://zoom.us/j/123456789", "bot_name": "Test Bot"}, source=BotCreationSource.API, project=self.project)
-        print("error", error)
         self.assertIsNotNone(bot)
         self.assertIsNotNone(bot.recordings.first())
         self.assertIsNone(error)
-        self.assertEqual(bot.recordings.first().transcription_provider, TranscriptionProviders.DEEPGRAM)
+        self.assertEqual(bot.recordings.first().transcription_provider, TranscriptionProviders.ELEVENLABS)
         self.assertEqual(bot.use_zoom_web_adapter(), False)
 
     def test_create_zoom_bot_with_default_settings_and_web_adapter(self):

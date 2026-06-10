@@ -1669,13 +1669,21 @@ class ElevenLabsProviderTest(TransactionTestCase):
     @mock.patch("bots.tasks.process_utterance_task.requests.post")
     @mock.patch("bots.tasks.process_utterance_task.pcm_to_mp3", return_value=b"mp3")
     def test_invalid_credentials_401(self, mock_pcm, mock_post):
-        """ElevenLabs returns 401 → CREDENTIALS_INVALID."""
+        """ElevenLabs 401 is retried first (transient free-tier blip), then becomes CREDENTIALS_INVALID once retries are exhausted."""
         with self._patch_creds():
             mock_response = mock.Mock(status_code=401)
+            mock_response.text = "unauthorized"
             mock_post.return_value = mock_response
 
+            # Early attempts: a 401 is treated as a retryable failure (ElevenLabs free tier blips)
+            self.utterance.transcription_attempt_count = 1
             transcript, failure = get_transcription_via_elevenlabs(self.utterance)
+            self.assertIsNone(transcript)
+            self.assertEqual(failure["reason"], TranscriptionFailureReasons.TRANSCRIPTION_REQUEST_FAILED)
 
+            # After retries are exhausted: treated as genuinely invalid credentials
+            self.utterance.transcription_attempt_count = 3
+            transcript, failure = get_transcription_via_elevenlabs(self.utterance)
             self.assertIsNone(transcript)
             self.assertEqual(failure["reason"], TranscriptionFailureReasons.CREDENTIALS_INVALID)
 
