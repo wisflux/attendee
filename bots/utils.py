@@ -505,9 +505,9 @@ def transcription_provider_from_bot_creation_data(data):
     elif "meeting_closed_captions" in settings:
         return TranscriptionProviders.CLOSED_CAPTION_FROM_PLATFORM
 
-    # Return default provider. Which is deepgram for Zoom, and ElevenLabs for Google Meet / Teams
-    if meeting_type_from_url(url) == MeetingTypes.ZOOM and not use_zoom_web_adapter:
-        return TranscriptionProviders.DEEPGRAM
+    # Default provider is ElevenLabs for all platforms; the Zoom web client uses platform captions.
+    if meeting_type_from_url(url) == MeetingTypes.ZOOM and use_zoom_web_adapter:
+        return TranscriptionProviders.CLOSED_CAPTION_FROM_PLATFORM
     return TranscriptionProviders.ELEVENLABS
 
 
