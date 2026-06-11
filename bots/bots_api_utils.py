@@ -674,3 +674,48 @@ def retry_failed_transcription(bot: Bot) -> tuple[int | None, dict | None]:
 
     logger.info(f"Retrying transcription for {len(retryable_utterances)} failed utterances of bot {bot.object_id}")
     return len(retryable_utterances), None
+
+
+MEETING_LINEAGE_MAX_BOTS = 50
+
+
+def resolve_meeting_lineage(bot: Bot) -> list[Bot]:
+    """Returns the chain of bots that covered the same meeting occurrence as the given bot,
+    ordered by creation time. Bots are linked through metadata.replaces (stamped on crash
+    replacements); a link is only followed when the two bots' meeting fingerprints agree, so
+    different occurrences of a recurring meeting are never merged. Cycle/hop capped."""
+
+    def fingerprints_agree(bot_a: Bot, bot_b: Bot) -> bool:
+        return bot_a.meeting_dedup_key is None or bot_b.meeting_dedup_key is None or bot_a.meeting_dedup_key == bot_b.meeting_dedup_key
+
+    lineage_by_id = {bot.id: bot}
+
+    # Walk backwards: the bots this one (transitively) replaced
+    current = bot
+    while len(lineage_by_id) < MEETING_LINEAGE_MAX_BOTS:
+        replaced_object_id = (current.metadata or {}).get("replaces")
+        if not replaced_object_id:
+            break
+        predecessor = Bot.objects.filter(project=current.project, object_id=replaced_object_id).first()
+        if predecessor is None or predecessor.id in lineage_by_id or not fingerprints_agree(current, predecessor):
+            break
+        lineage_by_id[predecessor.id] = predecessor
+        current = predecessor
+
+    # Walk forwards: the bots that (transitively) replaced this one
+    lineage_by_object_id = {lineage_bot.object_id: lineage_bot for lineage_bot in lineage_by_id.values()}
+    frontier = list(lineage_by_id.values())
+    while frontier and len(lineage_by_id) < MEETING_LINEAGE_MAX_BOTS:
+        successors = Bot.objects.filter(project=bot.project, metadata__replaces__in=[frontier_bot.object_id for frontier_bot in frontier])
+        frontier = []
+        for successor in successors:
+            if successor.id in lineage_by_id:
+                continue
+            predecessor = lineage_by_object_id.get((successor.metadata or {}).get("replaces"))
+            if predecessor is None or not fingerprints_agree(successor, predecessor):
+                continue
+            lineage_by_id[successor.id] = successor
+            lineage_by_object_id[successor.object_id] = successor
+            frontier.append(successor)
+
+    return sorted(lineage_by_id.values(), key=lambda lineage_bot: lineage_bot.created_at)
