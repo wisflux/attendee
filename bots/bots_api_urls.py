@@ -20,6 +20,11 @@ urlpatterns = [
         name="bot-transcript",
     ),
     path(
+        "bots/<str:object_id>/meeting_transcript",
+        bots_api_views.MeetingTranscriptView.as_view(),
+        name="bot-meeting-transcript",
+    ),
+    path(
         "bots/<str:object_id>/recording",
         bots_api_views.RecordingView.as_view(),
         name="bot-recording",

@@ -18,7 +18,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .authentication import ApiKeyAuthentication
-from .bots_api_utils import BotCreationSource, create_bot, create_bot_chat_message_request, create_bot_media_request_for_image, delete_bot, patch_bot, patch_bot_transcription_settings, patch_bot_voice_agent_settings, retry_failed_transcription, send_sync_command
+from .bots_api_utils import BotCreationSource, create_bot, create_bot_chat_message_request, create_bot_media_request_for_image, delete_bot, patch_bot, patch_bot_transcription_settings, patch_bot_voice_agent_settings, resolve_meeting_lineage, retry_failed_transcription, send_sync_command
 from .launch_bot_utils import launch_adhoc_bot_from_view
 from .meeting_url_utils import meeting_type_from_url
 from .models import (
@@ -1367,6 +1367,80 @@ class ChangeGalleryViewPageView(APIView):
 
         except Bot.DoesNotExist:
             return Response({"error": "Bot not found"}, status=status.HTTP_404_NOT_FOUND)
+
+
+class MeetingTranscriptView(APIView):
+    authentication_classes = [ApiKeyAuthentication]
+
+    @extend_schema(
+        operation_id="Get Meeting Transcript",
+        summary="Get the stitched transcript for the bot's whole meeting",
+        description="Returns the merged transcript of every bot that covered this bot's meeting occurrence (the bot itself plus any crash replacements linked via metadata.replaces), sorted by timestamp, with the coverage gaps between bots marked.",
+        responses={
+            200: OpenApiResponse(description='Stitched transcript. Body: {"bots": [bot ids in order], "utterances": [transcript entries + "bot_id"], "gaps": [{"after_bot_id", "before_bot_id", "start_timestamp_ms", "end_timestamp_ms"}]}'),
+            404: OpenApiResponse(description="Bot not found"),
+        },
+        parameters=[
+            *TokenHeaderParameter,
+            OpenApiParameter(
+                name="object_id",
+                type=str,
+                location=OpenApiParameter.PATH,
+                description="Bot ID",
+                examples=[OpenApiExample("Bot ID Example", value="bot_xxxxxxxxxxx")],
+            ),
+        ],
+        tags=["Bots"],
+    )
+    def get(self, request, object_id):
+        try:
+            bot = Bot.objects.get(object_id=object_id, project=request.auth.project)
+        except Bot.DoesNotExist:
+            return Response({"error": "Bot not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        lineage = resolve_meeting_lineage(bot)
+
+        bot_object_ids = []
+        merged_utterances = []
+        coverage_by_bot = {}
+        for lineage_bot in lineage:
+            bot_object_ids.append(lineage_bot.object_id)
+            recording = Recording.objects.filter(bot=lineage_bot, is_default_recording=True).first()
+            if not recording:
+                continue
+
+            utterances = Utterance.objects.select_related("participant").filter(recording=recording, transcription__isnull=False, async_transcription=None).order_by("timestamp_ms")
+            entries = [
+                {
+                    "bot_id": lineage_bot.object_id,
+                    "speaker_name": utterance.participant.full_name,
+                    "speaker_uuid": utterance.participant.uuid,
+                    "speaker_user_uuid": utterance.participant.user_uuid,
+                    "speaker_is_host": utterance.participant.is_host,
+                    "timestamp_ms": utterance.timestamp_ms,
+                    "duration_ms": utterance.duration_ms,
+                    "transcription": utterance.transcription,
+                }
+                for utterance in utterances
+                if utterance.transcription.get("transcript", "")
+            ]
+            if entries:
+                coverage_by_bot[lineage_bot.object_id] = (entries[0]["timestamp_ms"], max(entry["timestamp_ms"] + entry["duration_ms"] for entry in entries))
+            merged_utterances.extend(entries)
+
+        merged_utterances.sort(key=lambda entry: entry["timestamp_ms"])
+
+        # A gap is the uncovered stretch between two consecutive bots' utterances (e.g. the
+        # crash-to-replacement window). Bots that produced no utterances can't be measured.
+        gaps = []
+        covered_bot_ids = [bot_object_id for bot_object_id in bot_object_ids if bot_object_id in coverage_by_bot]
+        for earlier_bot_id, later_bot_id in zip(covered_bot_ids, covered_bot_ids[1:]):
+            earlier_end = coverage_by_bot[earlier_bot_id][1]
+            later_start = coverage_by_bot[later_bot_id][0]
+            if later_start > earlier_end:
+                gaps.append({"after_bot_id": earlier_bot_id, "before_bot_id": later_bot_id, "start_timestamp_ms": earlier_end, "end_timestamp_ms": later_start})
+
+        return Response({"bots": bot_object_ids, "utterances": merged_utterances, "gaps": gaps}, status=status.HTTP_200_OK)
 
 
 class RetryTranscriptionView(APIView):
