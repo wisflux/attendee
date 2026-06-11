@@ -245,6 +245,7 @@ def create_bot(data: dict, source: BotCreationSource, project: Project, _dedup_r
     deduplication_key = serializer.validated_data["deduplication_key"]
     webhook_subscriptions = serializer.validated_data["webhooks"]
     callback_settings = serializer.validated_data["callback_settings"]
+    recovery_settings = serializer.validated_data["recovery_settings"]
     external_media_storage_settings = serializer.validated_data["external_media_storage_settings"]
     voice_agent_settings = serializer.validated_data["voice_agent_settings"]
     kubernetes_settings = serializer.validated_data["kubernetes_settings"]
@@ -269,6 +270,7 @@ def create_bot(data: dict, source: BotCreationSource, project: Project, _dedup_r
         "zoom_settings": zoom_settings,
         "websocket_settings": websocket_settings,
         "callback_settings": callback_settings,
+        "recovery_settings": recovery_settings,
         "external_media_storage_settings": external_media_storage_settings,
         "voice_agent_settings": voice_agent_settings,
         "kubernetes_settings": kubernetes_settings,
