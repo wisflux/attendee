@@ -640,3 +640,37 @@ def create_webhook_subscriptions(webhook_data_list, project, bot=None):
         triggers = webhook_data.get("triggers", [])
 
         create_webhook_subscription(url, triggers, project, bot)
+
+
+def retry_failed_transcription(bot: Bot) -> tuple[int | None, dict | None]:
+    """Re-enqueue transcription for the bot's failed utterances (their audio is retained on
+    failure). Returns (number_of_utterances_retried, error). Idempotent: with nothing to retry it
+    returns (0, None)."""
+    from .models import RecordingManager, RecordingTranscriptionStates, Utterance
+    from .tasks.process_utterance_task import process_utterance
+
+    if bot.state not in BotStates.post_meeting_states() or bot.state == BotStates.DATA_DELETED:
+        return None, {"error": f"Bot is in state {BotStates.state_to_api_code(bot.state)}. Transcription can only be retried after the meeting has ended, and not after data deletion."}
+
+    recording = Recording.objects.filter(bot=bot, is_default_recording=True).first()
+    if not recording:
+        return None, {"error": "Bot has no recording to retry transcription for."}
+
+    failed_utterances = Utterance.objects.filter(recording=recording, async_transcription__isnull=True, failure_data__isnull=False)
+    # Audio is kept when transcription fails, but data deletion / chunk cleanup can remove it.
+    retryable_utterances = [utterance for utterance in failed_utterances if utterance.audio_chunk is not None or utterance.audio_blob]
+
+    if not retryable_utterances:
+        return 0, None
+
+    if recording.transcription_state == RecordingTranscriptionStates.FAILED:
+        RecordingManager.set_recording_transcription_failed_to_in_progress_for_retry(recording)
+
+    for utterance in retryable_utterances:
+        utterance.failure_data = None
+        utterance.transcription_attempt_count = 0
+        utterance.save()
+        process_utterance.delay(utterance.id)
+
+    logger.info(f"Retrying transcription for {len(retryable_utterances)} failed utterances of bot {bot.object_id}")
+    return len(retryable_utterances), None
