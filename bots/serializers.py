@@ -1105,6 +1105,10 @@ class CallbackSettingsJSONField(serializers.JSONField):
     pass
 
 
+class RecoverySettingsJSONField(serializers.JSONField):
+    pass
+
+
 VOICE_AGENT_SETTINGS_SCHEMA = {
     "type": "object",
     "properties": {
@@ -1213,6 +1217,12 @@ class CreateBotSerializer(BotValidationMixin, serializers.Serializer):
         default=None,
     )
 
+    recovery_settings = RecoverySettingsJSONField(
+        help_text="Settings for automatically recovering the bot's meeting coverage after unexpected failures.",
+        required=False,
+        default=None,
+    )
+
     external_media_storage_settings = ExternalMediaStorageSettingsJSONField(
         help_text="Settings that allow Attendee to upload the recording to an external storage bucket controlled by you. This relieves you from needing to download the recording from Attendee and then upload it to your own storage. To use this feature you must add credentials to your project that provide access to the external storage.",
         required=False,
@@ -1271,6 +1281,29 @@ class CreateBotSerializer(BotValidationMixin, serializers.Serializer):
         "required": [],
         "additionalProperties": False,
     }
+
+    RECOVERY_SETTINGS_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "auto_rejoin_on_failure": {
+                "type": "boolean",
+                "description": "If true, a replacement bot is automatically created and launched when this bot crashes mid-meeting (heartbeat timeout, process termination or internal error). Replacements are never created when the bot was removed by the host, could not join, left normally, ran out of credits or hit its runtime limit. Defaults to false.",
+            },
+        },
+        "required": [],
+        "additionalProperties": False,
+    }
+
+    def validate_recovery_settings(self, value):
+        if value is None:
+            return value
+
+        try:
+            jsonschema.validate(instance=value, schema=self.RECOVERY_SETTINGS_SCHEMA)
+        except jsonschema.exceptions.ValidationError as e:
+            raise serializers.ValidationError(e.message)
+
+        return value
 
     def validate_callback_settings(self, value):
         if value is None:

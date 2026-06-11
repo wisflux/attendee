@@ -1213,6 +1213,9 @@ class Bot(models.Model):
     def automatic_leave_settings(self):
         return self.settings.get("automatic_leave_settings", {})
 
+    def auto_rejoin_on_failure(self):
+        return bool((self.settings.get("recovery_settings") or {}).get("auto_rejoin_on_failure", False))
+
     def zoom_rtms(self):
         return self.settings.get("zoom_rtms", {})
 
@@ -1820,6 +1823,14 @@ class BotEventManager:
         # Make sure the event type is FATAL_ERROR, this indicates an unexpected failure
         if event_type != BotEventTypes.FATAL_ERROR:
             return
+
+        # Schedule a crash-replacement check for after this transition durably commits. The policy
+        # (opt-in setting, allowlist of crash sub-types, guards, hourly cap) lives in
+        # bot_recovery_utils and never raises; on_commit guarantees no bot is launched from inside
+        # a transaction that could still roll back.
+        from bots.bot_recovery_utils import maybe_create_replacement_bot
+
+        transaction.on_commit(lambda: maybe_create_replacement_bot(bot.id, event_sub_type))
 
         if not os.getenv("SLACK_WEBHOOK_URL"):
             return
