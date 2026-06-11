@@ -450,14 +450,17 @@ class TestCreateBot(TestCase):
         self.assertEqual(Bot.objects.count(), 2)
 
     def test_create_bot_without_deduplication_key(self):
-        """Test that multiple bots can be created without a deduplication key."""
+        """Test that multiple bots can be created without a deduplication key.
+
+        Uses different meeting URLs: bots for the same meeting are deduplicated regardless of
+        deduplication_key (see TestOneBotPerMeetingDedup)."""
         # First bot creation should succeed
         bot1, error1 = create_bot(data={"meeting_url": "https://meet.google.com/abc-defg-hij", "bot_name": "Test Bot 1"}, source=BotCreationSource.API, project=self.project)
         self.assertIsNotNone(bot1)
         self.assertIsNone(error1)
 
         # Second bot creation without a key should also succeed
-        bot2, error2 = create_bot(data={"meeting_url": "https://meet.google.com/abc-defg-hij", "bot_name": "Test Bot 2"}, source=BotCreationSource.API, project=self.project)
+        bot2, error2 = create_bot(data={"meeting_url": "https://meet.google.com/xyz-uvwx-rst", "bot_name": "Test Bot 2"}, source=BotCreationSource.API, project=self.project)
         self.assertIsNotNone(bot2)
         self.assertIsNone(error2)
         self.assertEqual(Bot.objects.count(), 2)
@@ -1143,3 +1146,73 @@ class TestConcurrentBotLimit(TestCase):
         self.assertIsNotNone(bot)
         self.assertIsNone(error)
         mock_limit.assert_called()
+
+
+class TestOneBotPerMeetingDedup(TestCase):
+    """create_bot-level tests for one-bot-per-meeting: the meeting fingerprint is set on creation,
+    a duplicate request attaches to the existing active bot, and the slot frees when it ends."""
+
+    MEET_URL = "https://meet.google.com/abc-defg-hij"
+
+    def setUp(self):
+        organization = Organization.objects.create(name="Test Organization")
+        self.project = Project.objects.create(name="Test Project", organization=organization)
+        self.other_project = Project.objects.create(name="Other Project", organization=organization)
+
+    def create(self, meeting_url=MEET_URL, project=None, bot_name="Test Bot"):
+        return create_bot(data={"meeting_url": meeting_url, "bot_name": bot_name}, source=BotCreationSource.API, project=project or self.project)
+
+    def test_meeting_dedup_key_is_set_on_creation(self):
+        bot, error = self.create()
+        self.assertIsNone(error)
+        self.assertEqual(bot.meeting_dedup_key, "meet:abc-defg-hij")
+
+    def test_second_create_for_same_meeting_attaches_to_existing_bot(self):
+        bot1, error1 = self.create()
+        self.assertIsNone(error1)
+        bot2, error2 = self.create(bot_name="Second Caller's Bot")
+        self.assertIsNone(error2)
+        self.assertEqual(bot1.id, bot2.id)
+        self.assertTrue(getattr(bot2, "deduplicated", False))
+        self.assertFalse(getattr(bot1, "deduplicated", False))
+        self.assertEqual(Bot.objects.count(), 1)
+
+    def test_url_variant_of_same_meeting_attaches(self):
+        bot1, _ = self.create()
+        bot2, error = self.create(meeting_url="meet.google.com/abc-defg-hij?authuser=2&hs=122")
+        self.assertIsNone(error)
+        self.assertEqual(bot1.id, bot2.id)
+        self.assertTrue(getattr(bot2, "deduplicated", False))
+
+    def test_different_meetings_create_separate_bots(self):
+        bot1, _ = self.create()
+        bot2, error = self.create(meeting_url="https://meet.google.com/xyz-uvwx-rst")
+        self.assertIsNone(error)
+        self.assertNotEqual(bot1.id, bot2.id)
+        self.assertFalse(getattr(bot2, "deduplicated", False))
+
+    def test_new_bot_created_after_existing_bot_ends(self):
+        bot1, _ = self.create()
+        Bot.objects.filter(id=bot1.id).update(state=BotStates.ENDED)
+        bot2, error = self.create()
+        self.assertIsNone(error)
+        self.assertNotEqual(bot1.id, bot2.id)
+        self.assertFalse(getattr(bot2, "deduplicated", False))
+        self.assertEqual(Bot.objects.count(), 2)
+
+    def test_same_meeting_in_different_projects_gets_separate_bots(self):
+        bot1, _ = self.create(project=self.project)
+        bot2, error = self.create(project=self.other_project)
+        self.assertIsNone(error)
+        self.assertNotEqual(bot1.id, bot2.id)
+        self.assertFalse(getattr(bot2, "deduplicated", False))
+
+    def test_unfingerprintable_meeting_urls_skip_dedup(self):
+        # Meet /lookup/ links normalize but get no fingerprint (different meetings share the
+        # normalized form) -- they must create separate bots rather than wrongly merging.
+        bot1, error1 = self.create(meeting_url="https://meet.google.com/lookup/abc123xyz")
+        bot2, error2 = self.create(meeting_url="https://meet.google.com/lookup/abc123xyz")
+        self.assertIsNone(error1)
+        self.assertIsNone(error2)
+        self.assertIsNone(bot1.meeting_dedup_key)
+        self.assertNotEqual(bot1.id, bot2.id)

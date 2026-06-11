@@ -289,6 +289,10 @@ class BotListCreateView(GenericAPIView):
                 description="Bot created successfully",
                 examples=[NewlyCreatedBotExample],
             ),
+            200: OpenApiResponse(
+                response=BotSerializer,
+                description='A bot is already active for this meeting; the existing bot is returned instead of creating a new one. The response additionally contains "deduplicated": true.',
+            ),
             400: OpenApiResponse(description="Invalid input"),
         },
         parameters=TokenHeaderParameter,
@@ -298,6 +302,13 @@ class BotListCreateView(GenericAPIView):
         bot, error = create_bot(data=request.data, source=BotCreationSource.API, project=request.auth.project)
         if error:
             return Response(error, status=status.HTTP_400_BAD_REQUEST)
+
+        # A deduplicated bot is the one already covering this meeting. It was launched by its
+        # original request, so launching it again would make it join the meeting twice.
+        if getattr(bot, "deduplicated", False):
+            response_data = BotSerializer(bot).data
+            response_data["deduplicated"] = True
+            return Response(response_data, status=status.HTTP_200_OK)
 
         # If this is a scheduled bot, we don't want to launch it yet.
         if bot.state == BotStates.JOINING:

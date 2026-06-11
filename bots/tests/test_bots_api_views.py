@@ -1,4 +1,5 @@
 from datetime import timedelta
+from unittest import mock
 from urllib.parse import urlencode
 
 from django.test import Client, TransactionTestCase
@@ -384,3 +385,47 @@ class TranscriptSplitOnTurnsViewTest(TransactionTestCase):
         self.assertEqual(results[2]["transcription"]["transcript"], "World")
         self.assertEqual(len(results[2]["transcription"]["words"]), 1)
         self.assertEqual(results[2]["transcription"]["words"][0]["word"], "World")
+
+
+class BotCreateDedupViewTest(TransactionTestCase):
+    """View-level tests for one-bot-per-meeting: duplicate POST /bots returns 200 with
+    deduplicated=true and must NOT launch the existing bot a second time."""
+
+    def setUp(self):
+        self.organization = Organization.objects.create(name="Dedup Org")
+        self.project = Project.objects.create(name="Dedup Project", organization=self.organization)
+        self.api_key, self.api_key_plain = ApiKey.create(project=self.project, name="Dedup API Key")
+        self.client = Client()
+
+    def post_bot(self, meeting_url):
+        return self.client.post(
+            "/api/v1/bots",
+            data={"meeting_url": meeting_url, "bot_name": "Dedup Bot"},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Token {self.api_key_plain}",
+        )
+
+    @mock.patch("bots.bots_api_views.launch_adhoc_bot_from_view")
+    def test_duplicate_create_returns_200_and_does_not_relaunch(self, mock_launch):
+        first = self.post_bot("https://meet.google.com/abc-defg-hij")
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(mock_launch.call_count, 1)
+        self.assertNotIn("deduplicated", first.json())
+
+        second = self.post_bot("https://meet.google.com/abc-defg-hij")
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        self.assertTrue(second.json()["deduplicated"])
+        self.assertEqual(second.json()["id"], first.json()["id"])
+        # the existing bot was already launched by the first request -- launching again would
+        # make it join the meeting twice
+        self.assertEqual(mock_launch.call_count, 1)
+        self.assertEqual(Bot.objects.count(), 1)
+
+    @mock.patch("bots.bots_api_views.launch_adhoc_bot_from_view")
+    def test_different_meeting_creates_and_launches_second_bot(self, mock_launch):
+        first = self.post_bot("https://meet.google.com/abc-defg-hij")
+        second = self.post_bot("https://meet.google.com/xyz-uvwx-rst")
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(second.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(mock_launch.call_count, 2)
+        self.assertEqual(Bot.objects.count(), 2)

@@ -1303,6 +1303,11 @@ class CreateBotView(LoginRequiredMixin, ProjectUrlContextMixin, View):
             if error:
                 return HttpResponse(json.dumps(error), status=400)
 
+            # A deduplicated bot is the one already covering this meeting. It was launched by its
+            # original request, so launching it again would make it join the meeting twice.
+            if getattr(bot, "deduplicated", False):
+                return HttpResponse("ok", status=200)
+
             # If this is a scheduled bot, we don't want to launch it yet.
             if bot.state == BotStates.JOINING:
                 launch_adhoc_bot_from_view(bot)
