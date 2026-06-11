@@ -11,7 +11,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.urls import reverse
 
-from .meeting_url_utils import meeting_type_from_url
+from .meeting_url_utils import canonical_meeting_id, meeting_type_from_url
 from .models import (
     Bot,
     BotChatMessageRequest,
@@ -202,7 +202,7 @@ class BotCreationSource(str, Enum):
     SCHEDULER = "scheduler"
 
 
-def create_bot(data: dict, source: BotCreationSource, project: Project) -> tuple[Bot | None, dict | None]:
+def create_bot(data: dict, source: BotCreationSource, project: Project, _dedup_retry: bool = False) -> tuple[Bot | None, dict | None]:
     # Given them a small grace period before we start rejecting requests
     if project.organization.out_of_credits():
         logger.error(f"Organization {project.organization.id} has insufficient credits. Please add credits in the Account -> Billing page.")
@@ -223,6 +223,10 @@ def create_bot(data: dict, source: BotCreationSource, project: Project) -> tuple
     error = validate_meeting_url_and_credentials(meeting_url, project)
     if error:
         return None, error
+
+    # Canonical meeting fingerprint for the one-active-bot-per-meeting constraint. None (URL we
+    # can't fingerprint) means the bot simply doesn't participate in meeting dedup.
+    meeting_dedup_key = canonical_meeting_id(meeting_url)
 
     bot_name = serializer.validated_data["bot_name"]
     transcription_settings = serializer.validated_data["transcription_settings"]
@@ -280,6 +284,7 @@ def create_bot(data: dict, source: BotCreationSource, project: Project) -> tuple
                 metadata=metadata,
                 join_at=join_at,
                 deduplication_key=deduplication_key,
+                meeting_dedup_key=meeting_dedup_key,
                 state=initial_state,
                 calendar_event=calendar_event,
             )
@@ -341,6 +346,21 @@ def create_bot(data: dict, source: BotCreationSource, project: Project) -> tuple
         logger.error(f"ValidationError creating bot: {e}")
         return None, {"error": e.messages[0]}
     except Exception as e:
+        if isinstance(e, IntegrityError) and "unique_bot_meeting_dedup_key" in str(e):
+            # A bot is already active for this meeting in this project: return it instead of an
+            # error so duplicate requests are idempotent ("attach"). The atomic block has rolled
+            # back, so this is a fresh query.
+            existing_bot = Bot.objects.filter(project=project, meeting_dedup_key=meeting_dedup_key, state__in=BotStates.holds_meeting_slot_states()).first()
+            if existing_bot:
+                logger.info(f"Bot creation deduplicated: returning existing active bot {existing_bot.object_id} for meeting key {meeting_dedup_key}")
+                existing_bot.deduplicated = True  # transient flag read by the views; not persisted
+                return existing_bot, None
+            # The slot was freed between our failed INSERT and the query above (the existing bot
+            # just ended). Retry the whole creation once; a second conflict is a clear error.
+            if not _dedup_retry:
+                return create_bot(data=data, source=source, project=project, _dedup_retry=True)
+            return None, {"error": "A bot for this meeting was created or ended concurrently. Please retry the request."}
+
         if isinstance(e, IntegrityError) and "unique_bot_deduplication_key" in str(e):
             logger.error(f"IntegrityError due to unique_bot_deduplication_key constraint violation creating bot: {e}")
             return None, {"error": "Deduplication key already in use. A bot in a non-terminal state with this deduplication key already exists. Please use a different deduplication key or wait for that bot to terminate."}
