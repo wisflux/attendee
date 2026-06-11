@@ -18,7 +18,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .authentication import ApiKeyAuthentication
-from .bots_api_utils import BotCreationSource, create_bot, create_bot_chat_message_request, create_bot_media_request_for_image, delete_bot, patch_bot, patch_bot_transcription_settings, patch_bot_voice_agent_settings, send_sync_command
+from .bots_api_utils import BotCreationSource, create_bot, create_bot_chat_message_request, create_bot_media_request_for_image, delete_bot, patch_bot, patch_bot_transcription_settings, patch_bot_voice_agent_settings, retry_failed_transcription, send_sync_command
 from .launch_bot_utils import launch_adhoc_bot_from_view
 from .meeting_url_utils import meeting_type_from_url
 from .models import (
@@ -1367,6 +1367,44 @@ class ChangeGalleryViewPageView(APIView):
 
         except Bot.DoesNotExist:
             return Response({"error": "Bot not found"}, status=status.HTTP_404_NOT_FOUND)
+
+
+class RetryTranscriptionView(APIView):
+    authentication_classes = [ApiKeyAuthentication]
+    throttle_classes = [ProjectPostThrottle]
+
+    @extend_schema(
+        operation_id="Retry Transcription",
+        summary="Retry the bot's failed transcriptions",
+        description="Re-enqueues transcription for the bot's failed utterances. Audio is retained when transcription fails, so after fixing the underlying problem (e.g. topping up transcription-provider credits) this recovers the missing transcript. Idempotent: returns a count of 0 when there is nothing to retry.",
+        responses={
+            200: OpenApiResponse(description='Retry enqueued. Body: {"retried_utterances": <count>}'),
+            400: OpenApiResponse(description="Bot is not in a valid state to retry transcription"),
+            404: OpenApiResponse(description="Bot not found"),
+        },
+        parameters=[
+            *TokenHeaderParameter,
+            OpenApiParameter(
+                name="object_id",
+                type=str,
+                location=OpenApiParameter.PATH,
+                description="Bot ID",
+                examples=[OpenApiExample("Bot ID Example", value="bot_xxxxxxxxxxx")],
+            ),
+        ],
+        tags=["Bots"],
+    )
+    def post(self, request, object_id):
+        try:
+            bot = Bot.objects.get(object_id=object_id, project=request.auth.project)
+        except Bot.DoesNotExist:
+            return Response({"error": "Bot not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        retried_count, error = retry_failed_transcription(bot)
+        if error:
+            return Response(error, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({"retried_utterances": retried_count}, status=status.HTTP_200_OK)
 
 
 class PauseRecordingView(APIView):

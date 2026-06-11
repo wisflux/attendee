@@ -1789,6 +1789,7 @@ class BotSerializer(serializers.ModelSerializer):
             "recording_state",
             "join_at",
             "deduplication_key",
+            "meeting_dedup_key",
         ]
         read_only_fields = fields
 

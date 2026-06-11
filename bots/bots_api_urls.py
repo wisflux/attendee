@@ -60,6 +60,11 @@ urlpatterns = [
         name="bot-delete-data",
     ),
     path(
+        "bots/<str:object_id>/retry_transcription",
+        bots_api_views.RetryTranscriptionView.as_view(),
+        name="bot-retry-transcription",
+    ),
+    path(
         "bots/<str:object_id>/pause_recording",
         bots_api_views.PauseRecordingView.as_view(),
         name="bot-pause-recording",

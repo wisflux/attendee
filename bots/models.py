@@ -2510,6 +2510,20 @@ class RecordingManager:
         recording.save()
 
     @classmethod
+    def set_recording_transcription_failed_to_in_progress_for_retry(cls, recording: Recording):
+        # Used by the retry-failed-transcription flow: failed utterances keep their audio, so a
+        # FAILED transcription can be moved back to IN_PROGRESS and re-run. This is the only
+        # transition out of FAILED, and it clears the stored failure data.
+        recording.refresh_from_db()
+
+        if recording.transcription_state != RecordingTranscriptionStates.FAILED:
+            raise ValueError(f"Invalid state transition. Recording {recording.id} is in transcription state {recording.get_transcription_state_display()}")
+
+        recording.transcription_state = RecordingTranscriptionStates.IN_PROGRESS
+        recording.transcription_failure_data = None
+        recording.save()
+
+    @classmethod
     def is_terminal_state(cls, state: int):
         return state == RecordingStates.COMPLETE or state == RecordingStates.FAILED
 
