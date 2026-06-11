@@ -43,6 +43,23 @@ services:
     command: python manage.py runserver 0.0.0.0:8000
     entrypoint: []
 
+  # Reaps crashed/never-launched bots (heartbeat timeout) so they don't hold their meeting's
+  # one-bot-per-meeting slot. In production this should run as a cron job / k8s CronJob.
+  attendee-janitor-local:
+    build: ./
+    volumes:
+     - .:/attendee
+    networks:
+      - attendee_network
+    env_file: .env
+    environment:
+      - POSTGRES_HOST=postgres
+      - REDIS_URL=redis://redis:6379/5
+      - DJANGO_SETTINGS_MODULE=attendee.settings.development
+    command: bash -c "while true; do python manage.py clean_up_bots_with_heartbeat_timeout_or_that_never_launched; sleep 60; done"
+    entrypoint: []
+    restart: unless-stopped
+
   attendee-webpage-streamer-local:
     build: ./
     volumes:
