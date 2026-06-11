@@ -448,6 +448,21 @@ def get_transcription_via_sarvam(utterance):
         return None, {"reason": TranscriptionFailureReasons.INTERNAL_ERROR, "error": str(e)}
 
 
+def elevenlabs_error_detail(response):
+    # ElevenLabs error bodies look like {"detail": {"status": "<code>", "message": "..."}}. The
+    # status code (e.g. quota_exceeded, detected_unusual_activity, invalid_api_key) is what tells
+    # an exhausted account apart from a genuinely bad key, so we preserve it in failure_data for
+    # downstream surfacing (bot-end event metadata -> webhooks -> user-facing notifications).
+    try:
+        detail = response.json().get("detail", {})
+        if isinstance(detail, dict):
+            extracted = {key: detail.get(key) for key in ("status", "message") if detail.get(key)}
+            return extracted or None
+    except Exception:
+        pass
+    return None
+
+
 def get_transcription_via_elevenlabs(utterance):
     recording = utterance.recording
     transcription_settings = utterance.transcription_settings
@@ -496,7 +511,11 @@ def get_transcription_via_elevenlabs(utterance):
             # only declare the credentials invalid once the retries are exhausted.
             if utterance.transcription_attempt_count < 3:
                 return None, {"reason": TranscriptionFailureReasons.TRANSCRIPTION_REQUEST_FAILED, "status_code": 401, "provider": "elevenlabs", "transient_auth": True}
-            return None, {"reason": TranscriptionFailureReasons.CREDENTIALS_INVALID}
+            failure_data = {"reason": TranscriptionFailureReasons.CREDENTIALS_INVALID}
+            error_detail = elevenlabs_error_detail(response)
+            if error_detail:
+                failure_data["detail"] = error_detail
+            return None, failure_data
 
         if response.status_code == 429:
             return None, {"reason": TranscriptionFailureReasons.RATE_LIMIT_EXCEEDED, "status_code": response.status_code}
