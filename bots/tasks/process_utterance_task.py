@@ -8,7 +8,7 @@ from celery import shared_task
 
 logger = logging.getLogger(__name__)
 
-from bots.models import Credentials, RecordingManager, TranscriptionFailureReasons, TranscriptionProviders, Utterance, WebhookTriggerTypes
+from bots.models import Credentials, RecordingManager, RecordingTranscriptionStates, TranscriptionFailureReasons, TranscriptionProviders, Utterance, WebhookTriggerTypes
 from bots.transcription_utils import get_transcription_via_assemblyai_from_mp3, is_retryable_failure
 from bots.utils import pcm_to_mp3
 from bots.webhook_payloads import utterance_webhook_payload
@@ -104,6 +104,13 @@ def process_utterance(self, utterance_id):
                 utterance.failure_data = failure_data
                 utterance.save()
                 logger.info(f"Transcription failed for utterance {utterance_id}, failure data: {failure_data}")
+
+                # If the meeting is already over, the bot-end hook that normally marks the
+                # recording's transcription failed has already run -- so a post-meeting retry that
+                # fails again would leave the recording stuck IN_PROGRESS. Mark it failed here.
+                if utterance.async_transcription is None and RecordingManager.is_terminal_state(utterance.recording.state) and utterance.recording.transcription_state == RecordingTranscriptionStates.IN_PROGRESS:
+                    failure_reasons = list(Utterance.objects.filter(recording=utterance.recording, failure_data__has_key="reason").values_list("failure_data__reason", flat=True).distinct())
+                    RecordingManager.set_recording_transcription_failed(utterance.recording, failure_data={"failure_reasons": failure_reasons})
                 return
 
         # The direct audio_blob column on the utterance model is deprecated, but for backwards compatibility, we need to clear it if it exists
