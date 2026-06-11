@@ -1865,11 +1865,30 @@ class ElevenLabsProviderTest(TransactionTestCase):
             self.assertIsNone(transcript)
             self.assertEqual(failure["reason"], TranscriptionFailureReasons.TRANSCRIPTION_REQUEST_FAILED)
 
-            # After retries are exhausted: treated as genuinely invalid credentials
+            # After retries are exhausted: treated as genuinely invalid credentials, and the
+            # provider's error detail (e.g. quota_exceeded) is preserved for user-facing surfacing
+            mock_response.json.return_value = {"detail": {"status": "quota_exceeded", "message": "You have reached your quota."}}
             self.utterance.transcription_attempt_count = 3
             transcript, failure = get_transcription_via_elevenlabs(self.utterance)
             self.assertIsNone(transcript)
             self.assertEqual(failure["reason"], TranscriptionFailureReasons.CREDENTIALS_INVALID)
+            self.assertEqual(failure["detail"], {"status": "quota_exceeded", "message": "You have reached your quota."})
+
+    @mock.patch("bots.tasks.process_utterance_task.requests.post")
+    @mock.patch("bots.tasks.process_utterance_task.pcm_to_mp3", return_value=b"mp3")
+    def test_invalid_credentials_401_with_unparseable_body(self, mock_pcm, mock_post):
+        """A 401 whose body isn't the expected error JSON still fails cleanly, without a detail key."""
+        with self._patch_creds():
+            mock_response = mock.Mock(status_code=401)
+            mock_response.text = "<html>gateway error</html>"
+            mock_response.json.side_effect = ValueError("not json")
+            mock_post.return_value = mock_response
+
+            self.utterance.transcription_attempt_count = 3
+            transcript, failure = get_transcription_via_elevenlabs(self.utterance)
+            self.assertIsNone(transcript)
+            self.assertEqual(failure["reason"], TranscriptionFailureReasons.CREDENTIALS_INVALID)
+            self.assertNotIn("detail", failure)
 
     @mock.patch("bots.tasks.process_utterance_task.requests.post")
     @mock.patch("bots.tasks.process_utterance_task.pcm_to_mp3", return_value=b"mp3")
