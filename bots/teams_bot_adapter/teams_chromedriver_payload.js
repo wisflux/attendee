@@ -746,6 +746,9 @@ class VirtualStreamToPhysicalStreamMappingManager {
 
         this.physicalClientStreamIdToVirtualStreamIdMapping = {}
         this.virtualStreamIdToPhysicalClientStreamIdMapping = {}
+
+        // Maps raw numeric SSRC → virtualStreamId, built from SDP
+        this.ssrcToVirtualStreamId = {}
     }
 
     getVirtualVideoStreamIdToSend() {
@@ -833,6 +836,19 @@ class VirtualStreamToPhysicalStreamMappingManager {
         }
         realConsole?.log('physicalStreamsByClientStreamId', this.physicalStreamsByClientStreamId);
         realConsole?.log('physicalStreamsByServerStreamId', this.physicalStreamsByServerStreamId);
+    }
+
+    upsertSsrcToVirtualStreamIdMappings(mappings) {
+        for (const {ssrc, virtualStreamId} of mappings) {
+            this.ssrcToVirtualStreamId[ssrc.toString()] = virtualStreamId.toString();
+        }
+        realConsole?.log('ssrcToVirtualStreamId', this.ssrcToVirtualStreamId);
+    }
+
+    ssrcToParticipant(ssrc) {
+        const virtualStreamId = this.ssrcToVirtualStreamId[ssrc.toString()];
+        if (!virtualStreamId) return null;
+        return this.virtualStreams.get(virtualStreamId)?.participant;
     }
 
     upsertVirtualStream(virtualStream) {
@@ -1018,6 +1034,9 @@ The tracks have a streamId that looks like this mainVideo-39016. The SDP has tha
                 const mapping = extractStreamIdToSSRCMappingFromSDP(description.sdp);
                 realConsole?.log('from peerConnection.setRemoteDescription: extractStreamIdToSSRCMappingFromSDP = ', mapping);
                 virtualStreamToPhysicalStreamMappingManager.upsertPhysicalStreams(mapping);
+                const ssrcMappings = extractRawSsrcToVirtualStreamIdMappingFromSDP(description.sdp);
+                realConsole?.log('from peerConnection.setRemoteDescription: ssrcMappings = ', ssrcMappings);
+                virtualStreamToPhysicalStreamMappingManager.upsertSsrcToVirtualStreamIdMappings(ssrcMappings);
                 return originalSetRemoteDescription.apply(this, arguments);
             };
 
@@ -1049,7 +1068,7 @@ The tracks have a streamId that looks like this mainVideo-39016. The SDP has tha
                     const streamIds = sdpMediaEntryAttributes['x-source-streamid'] || [];
                     if (streamIds.length > 1)
                         console.warn('Warning: x-source-streamid has multiple stream ids');
-                    
+
                     const streamId = streamIds[0];
 
                     for(const ssrc of sdpMediaEntrySSRCNumbers)
@@ -1058,6 +1077,26 @@ The tracks have a streamId that looks like this mainVideo-39016. The SDP has tha
                 }
 
                 return mapping;
+            }
+
+            // Extracts raw numeric SSRC → x-source-streamid (virtual stream ID) from SDP.
+            // contributingSource.source from WebRTC getContributingSources() is a raw numeric SSRC.
+            function extractRawSsrcToVirtualStreamIdMappingFromSDP(sdp) {
+                const parsedSDP = parseSDP(sdp);
+                const mappings = [];
+                for (const sdpMediaEntry of parsedSDP.media || []) {
+                    const attrs = sdpMediaEntry.attributes || {};
+                    const virtualStreamIds = attrs['x-source-streamid'] || [];
+                    const virtualStreamId = virtualStreamIds[0];
+                    if (!virtualStreamId) continue;
+                    // Each ssrc line looks like "<numericSSRC> <attribute>:<value>"
+                    const rawSsrcLines = attrs.ssrc || [];
+                    const rawSsrcs = [...new Set(rawSsrcLines.map(line => line.split(' ')[0]).filter(Boolean))];
+                    for (const ssrc of rawSsrcs) {
+                        mappings.push({ssrc, virtualStreamId});
+                    }
+                }
+                return mappings;
             }
 
             // Helper function to parse SDP into a more readable format
@@ -1996,7 +2035,9 @@ class ReceiverManager {
 
     pollReceivers() {
         const speakingParticipantIds = new Set();
-        const currentTime = Date.now();
+        // getContributingSources() timestamps are DOMHighResTimeStamps (ms since performance.timeOrigin),
+        // not Unix epoch — must use performance.now() for comparison, not Date.now().
+        const currentTime = performance.now();
 
         for (const [receiver, isActive] of this.receiverMap) {
             const contributingSources = receiver.getContributingSources();
@@ -3117,20 +3158,13 @@ class CallManager {
 
 
     getSpeakingParticipantIds(contributingSources) {
-        this.setActiveCall();
-        if (!this.activeCall) {
-            return [];
-        }
-        if (!this.activeCall.participants) {
-            return [];
-        }
-
         const speakingParticipantIds = new Set();
 
-        this.activeCall.participants.forEach(participant => {
-            if (contributingSources.some(contributingSource => participant.hasAudioSource(contributingSource.source)) && participant.id)
+        for (const contributingSource of contributingSources) {
+            const participant = virtualStreamToPhysicalStreamMappingManager.virtualStreamIdToParticipant(contributingSource.source.toString());
+            if (participant?.id)
                 speakingParticipantIds.add(participant.id);
-        });
+        }
 
         return speakingParticipantIds;
     }
