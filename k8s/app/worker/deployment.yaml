@@ -21,7 +21,7 @@ spec:
       containers:
         - name: worker
           image: wisfluxp/attendee:latest
-          command: ["celery", "-A", "attendee", "worker", "-l", "INFO"]
+          command: ["celery", "-A", "attendee", "worker", "-l", "INFO", "--concurrency=4"]
           envFrom:
             - configMapRef:
                 name: attendee-config
