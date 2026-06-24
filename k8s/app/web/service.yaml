@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: attendee-web
+  namespace: meeting-utility
+spec:
+  selector:
+    app: attendee-web
+  ports:
+    - port: 8000
+      targetPort: 8000
+  type: ClusterIP

@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: attendee-webpage-streamer
+  namespace: meeting-utility
+  labels:
+    app: attendee-webpage-streamer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: attendee-webpage-streamer
+  template:
+    metadata:
+      labels:
+        app: attendee-webpage-streamer
+    spec:
+      serviceAccountName: attendee-bot-launcher
+      imagePullSecrets:
+        - name: regcred
+      containers:
+        - name: webpage-streamer
+          image: wisfluxp/attendee:latest
+          command: ["python", "bots/webpage_streamer/run_webpage_streamer.py"]
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: attendee-config
+            - secretRef:
+                name: attendee-secret
+          env:
+            - name: DATABASE_URL
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/attendee"
+            - name: ENABLE_CHROME_SANDBOX
+              value: "true"
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: dshm
+              mountPath: /dev/shm
+            - name: home
+              mountPath: /home/app
+          resources:
+            requests:
+              cpu: "1"
+              memory: 4Gi
+              ephemeral-storage: 500Mi
+            limits:
+              memory: 4Gi
+              ephemeral-storage: 500Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: Unconfined
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
+        - name: home
+          emptyDir:
+            sizeLimit: 1Gi

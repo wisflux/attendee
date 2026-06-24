@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: attendee-web
+  namespace: meeting-utility
+  labels:
+    app: attendee-web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: attendee-web
+  template:
+    metadata:
+      labels:
+        app: attendee-web
+    spec:
+      serviceAccountName: attendee-bot-launcher
+      imagePullSecrets:
+        - name: regcred
+      initContainers:
+        - name: migrate
+          image: wisfluxp/attendee:latest
+          command: ["python", "manage.py", "migrate", "--noinput"]
+          envFrom:
+            - configMapRef:
+                name: attendee-config
+            - secretRef:
+                name: attendee-secret
+          env:
+            - name: DATABASE_URL
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/attendee"
+      containers:
+        - name: web
+          image: wisfluxp/attendee:latest
+          command: ["gunicorn", "attendee.wsgi", "--bind", "0.0.0.0:8000", "--workers", "4", "--timeout", "120"]
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: attendee-config
+            - secretRef:
+                name: attendee-secret
+          env:
+            - name: DATABASE_URL
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/attendee"
+          readinessProbe:
+            httpGet:
+              path: /health/
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health/
+              port: 8000
+            initialDelaySeconds: 40
+            periodSeconds: 15
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
