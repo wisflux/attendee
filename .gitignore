@@ -99,6 +99,9 @@ local_settings.py
 
 .env
 db.sqlite3
+k8s/app/regcred.yaml
+k8s/app/namespace-admin.yaml
+*-kubeconfig.yaml
 
 custom/
 docker-compose.yaml
