@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: attendee-config
+  namespace: meeting-utility
+data:
+  DJANGO_SETTINGS_MODULE: "attendee.settings.production"
+  REDIS_URL: "redis://redis:6379/0"
+  AWS_RECORDING_STORAGE_BUCKET_NAME: "attendee-recordings"
+  AWS_DEFAULT_REGION: "us-east-1"
+  AWS_ENDPOINT_URL: "http://minio:9000"
+  AWS_S3_ENDPOINT_URL: "https://minio.yourdomain.com"
+  STORAGE_PROTOCOL: "s3"
+  ENABLE_CHROME_SANDBOX: "false"
+  LAUNCH_BOT_METHOD: "kubernetes"
+  BOT_POD_NAMESPACE: "meeting-utility"
+  WEBPAGE_STREAMER_POD_NAMESPACE: "meeting-utility"
+  POSTGRES_SSL_REQUIRE: "false"
+  DJANGO_SSL_REQUIRE: "false"
+  REQUIRE_HTTPS_WEBHOOKS: "false"
+  DISABLE_RATE_LIMITING: "false"
+  DISABLE_EMAIL: "true"
+  ALLOWED_HOSTS: "*"
+  CSRF_TRUSTED_ORIGINS: "https://yourdomain.com"
+  BOT_POD_IMAGE: "wisfluxp/attendee"
+  BOT_POD_CONFIG_MAP_NAME: "attendee-config"
+  BOT_POD_SECRETS_NAME: "attendee-secret"
+  BOT_POD_IMAGE_PULL_SECRET_NAME: "regcred"
+  BOT_POD_SERVICE_ACCOUNT_NAME: "attendee-bot-launcher"
+  CUBER_APP_NAME: "attendee"
+  CUBER_RELEASE_VERSION: "latest"

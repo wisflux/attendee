@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: attendee-scheduler
+  namespace: meeting-utility
+  labels:
+    app: attendee-scheduler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: attendee-scheduler
+  template:
+    metadata:
+      labels:
+        app: attendee-scheduler
+    spec:
+      serviceAccountName: attendee-bot-launcher
+      imagePullSecrets:
+        - name: regcred
+      containers:
+        - name: scheduler
+          image: wisfluxp/attendee:latest
+          command: ["python", "manage.py", "run_scheduler"]
+          envFrom:
+            - configMapRef:
+                name: attendee-config
+            - secretRef:
+                name: attendee-secret
+          env:
+            - name: DATABASE_URL
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/attendee"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault

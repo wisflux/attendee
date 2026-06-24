@@ -1,0 +1,34 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: postgres-init-db
+  namespace: meeting-utility
+spec:
+  backoffLimit: 5
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: pg-init
+          image: postgres:15-alpine
+          envFrom:
+            - secretRef:
+                name: postgres-secret
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "Creating databases..."
+              PGPASSWORD="$POSTGRES_PASSWORD" psql \
+                -h postgres \
+                -U "$POSTGRES_USER" \
+                -d postgres \
+                -c "CREATE DATABASE attendee;" 2>/dev/null || echo "attendee db already exists"
+              PGPASSWORD="$POSTGRES_PASSWORD" psql \
+                -h postgres \
+                -U "$POSTGRES_USER" \
+                -d postgres \
+                -c "CREATE DATABASE workday;" 2>/dev/null || echo "workday db already exists"
+              echo "Database init complete."

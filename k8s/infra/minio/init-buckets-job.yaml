@@ -1,0 +1,37 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-init-buckets
+  namespace: meeting-utility
+spec:
+  backoffLimit: 5
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-minio
+          image: curlimages/curl:latest
+          command:
+            - sh
+            - -c
+            - |
+              until curl -sf http://minio:9000/minio/health/ready; do
+                echo "Waiting for MinIO to be ready..."
+                sleep 3
+              done
+              echo "MinIO is ready."
+      containers:
+        - name: mc-init
+          image: minio/mc:latest
+          envFrom:
+            - secretRef:
+                name: minio-secret
+          command:
+            - /bin/sh
+            - -c
+            - |
+              mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
+              mc mb --ignore-existing local/meeting-bot-releases
+              mc mb --ignore-existing local/attendee-recordings
+              echo "Buckets ready."

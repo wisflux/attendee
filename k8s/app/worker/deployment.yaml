@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: attendee-worker
+  namespace: meeting-utility
+  labels:
+    app: attendee-worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: attendee-worker
+  template:
+    metadata:
+      labels:
+        app: attendee-worker
+    spec:
+      serviceAccountName: attendee-bot-launcher
+      imagePullSecrets:
+        - name: regcred
+      containers:
+        - name: worker
+          image: wisfluxp/attendee:latest
+          command: ["celery", "-A", "attendee", "worker", "-l", "INFO"]
+          envFrom:
+            - configMapRef:
+                name: attendee-config
+            - secretRef:
+                name: attendee-secret
+          env:
+            - name: DATABASE_URL
+              value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/attendee"
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault

@@ -1,0 +1,49 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: attendee-janitor
+  namespace: meeting-utility
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: attendee-bot-launcher
+          imagePullSecrets:
+            - name: regcred
+          containers:
+            - name: janitor
+              image: wisfluxp/attendee:latest
+              command:
+                - python
+                - manage.py
+                - clean_up_bots_with_heartbeat_timeout_or_that_never_launched
+              envFrom:
+                - configMapRef:
+                    name: attendee-config
+                - secretRef:
+                    name: attendee-secret
+              env:
+                - name: DATABASE_URL
+                  value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/attendee"
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  memory: 256Mi
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 1000
+                runAsGroup: 1000
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                seccompProfile:
+                  type: RuntimeDefault
