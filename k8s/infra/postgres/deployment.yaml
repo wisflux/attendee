@@ -33,6 +33,12 @@ spec:
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_USER
           livenessProbe:
             exec:
               command: ["pg_isready", "-U", "$(POSTGRES_USER)"]
