@@ -1,0 +1,133 @@
+when:
+  - event: push
+    branch: prod
+    path:
+      - "Dockerfile"
+      - "requirements.txt"
+      - "entrypoint.sh"
+      - "manage.py"
+      - "attendee/**"
+      - "accounts/**"
+      - "bots/**"
+      - "static/**"
+      - "templates/**"
+      - ".woodpecker/attendee.yaml"
+
+steps:
+  kaniko-attendee:
+    image: gcr.io/kaniko-project/executor:debug
+    environment:
+      DOCKERHUB_USERNAME:
+        from_secret: DOCKERHUB_USERNAME
+      DOCKERHUB_TOKEN:
+        from_secret: DOCKERHUB_TOKEN
+    commands:
+      - mkdir -p /kaniko/.docker
+      - echo "{\"auths\":{\"https://index.docker.io/v1/\":{\"username\":\"$DOCKERHUB_USERNAME\",\"password\":\"$DOCKERHUB_TOKEN\"}}}" > /kaniko/.docker/config.json
+      - >
+        /kaniko/executor
+        --context=.
+        --dockerfile=Dockerfile
+        --destination=wisfluxp/attendee:${CI_COMMIT_SHA:0:7}
+        --destination=wisfluxp/attendee:latest
+
+  update-manifests:
+    depends_on: [kaniko-attendee]
+    image: wisfluxp/ci-deploy-tools:stable
+    commands:
+      - |
+        set -eu
+        IMAGE_TAG="${CI_COMMIT_SHA:0:7}"
+        echo "Updating deployment manifests with image tag: $IMAGE_TAG"
+
+        MANIFESTS=(
+          k8s/app/web/deployment.yaml
+          k8s/app/worker/deployment.yaml
+          k8s/app/scheduler/deployment.yaml
+          k8s/app/webpage-streamer/deployment.yaml
+          k8s/app/janitor/cronjob.yaml
+        )
+
+        for manifest in "${MANIFESTS[@]}"; do
+          sed -i "s|image: wisfluxp/attendee:.*|image: wisfluxp/attendee:$IMAGE_TAG|" "$manifest"
+        done
+
+        sed -i "s|CUBER_RELEASE_VERSION: \".*\"|CUBER_RELEASE_VERSION: \"$IMAGE_TAG\"|" k8s/app/configmap.yaml
+
+  commit-and-push:
+    depends_on: [update-manifests]
+    image: wisfluxp/ci-deploy-tools:stable
+    environment:
+      GITHUB_TOKEN:
+        from_secret: GITHUB_TOKEN
+    commands:
+      - |
+        set -eu
+        git config --global user.email "woodpecker-ci@wisflux.com"
+        git config --global user.name "Woodpecker CI"
+        git config --global --add safe.directory /woodpecker/src
+
+        echo "Staging changes..."
+        git add \
+          k8s/app/web/deployment.yaml \
+          k8s/app/worker/deployment.yaml \
+          k8s/app/scheduler/deployment.yaml \
+          k8s/app/webpage-streamer/deployment.yaml \
+          k8s/app/janitor/cronjob.yaml \
+          k8s/app/configmap.yaml
+
+        echo "Committing changes..."
+        git commit -m "ci: update image tag to ${CI_COMMIT_SHA:0:7} [skip ci]" || echo "No changes to commit"
+
+        echo "Pushing changes..."
+        git remote set-url origin "https://x-access-token:$${GITHUB_TOKEN}@github.com/wisflux/attendee.git"
+        git push origin HEAD:prod
+
+        echo "Creating/updating tags..."
+        git tag -d prod 2>/dev/null || true
+        git tag prod
+        git tag "prod-${CI_COMMIT_SHA}"
+        git push origin --tags -f
+
+        echo "Changes committed and pushed"
+
+  argocd-sync:
+    depends_on: [commit-and-push]
+    image: wisfluxp/ci-deploy-tools:stable
+    environment:
+      ARGOCD_SERVER:
+        from_secret: argocd_server
+      ARGOCD_TOKEN:
+        from_secret: argocd_token
+      ARGOCD_APP_NAME:
+        from_secret: argocd_app_name
+    commands:
+      - |
+        set -eu
+        echo "Syncing ArgoCD application: $${ARGOCD_APP_NAME}..."
+
+        SERVER="$${ARGOCD_SERVER#https://}"
+        SERVER="$${SERVER#http://}"
+        SERVER="$${SERVER%/}"
+
+        HTTP_STATUS=$(curl -s -o /tmp/sync_response.json -w "%{http_code}" \
+          -X POST \
+          "https://$${SERVER}/api/v1/applications/$${ARGOCD_APP_NAME}/sync" \
+          -H "Authorization: Bearer $${ARGOCD_TOKEN}" \
+          -H "Content-Type: application/json" \
+          -d '{"prune": false}')
+
+        if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+          echo "ArgoCD sync failed with HTTP $HTTP_STATUS"
+          cat /tmp/sync_response.json
+          exit 1
+        fi
+
+        jq -r '.status // "Sync triggered"' /tmp/sync_response.json
+        echo ""
+        echo "ArgoCD sync triggered for $${ARGOCD_APP_NAME}"
+        echo "=============================================="
+        echo "PRODUCTION deployment complete!"
+        echo "Commit: ${CI_COMMIT_SHA}"
+        echo "Image: wisfluxp/attendee:${CI_COMMIT_SHA:0:7}"
+        echo "=============================================="
