@@ -11,7 +11,7 @@ when:
       - "bots/**"
       - "static/**"
       - "templates/**"
-      - ".woodpecker/attendee.yaml"
+      - ".woodpecker/**"
 
 steps:
   kaniko-attendee:
@@ -28,7 +28,7 @@ steps:
         /kaniko/executor
         --context=.
         --dockerfile=Dockerfile
-        --destination=wisfluxp/attendee:${CI_COMMIT_SHA:0:7}
+        --destination=wisfluxp/attendee:$CI_COMMIT_SHA_SHORT
         --destination=wisfluxp/attendee:latest
 
   update-manifests:
@@ -37,18 +37,15 @@ steps:
     commands:
       - |
         set -eu
-        IMAGE_TAG="${CI_COMMIT_SHA:0:7}"
+        IMAGE_TAG="$CI_COMMIT_SHA_SHORT"
         echo "Updating deployment manifests with image tag: $IMAGE_TAG"
 
-        MANIFESTS=(
-          k8s/app/web/deployment.yaml
-          k8s/app/worker/deployment.yaml
-          k8s/app/scheduler/deployment.yaml
-          k8s/app/webpage-streamer/deployment.yaml
-          k8s/app/janitor/cronjob.yaml
-        )
-
-        for manifest in "${MANIFESTS[@]}"; do
+        for manifest in \
+          k8s/app/web/deployment.yaml \
+          k8s/app/worker/deployment.yaml \
+          k8s/app/scheduler/deployment.yaml \
+          k8s/app/webpage-streamer/deployment.yaml \
+          k8s/app/janitor/cronjob.yaml; do
           sed -i "s|image: wisfluxp/attendee:.*|image: wisfluxp/attendee:$IMAGE_TAG|" "$manifest"
         done
 
@@ -77,7 +74,7 @@ steps:
           k8s/app/configmap.yaml
 
         echo "Committing changes..."
-        git commit -m "ci: update image tag to ${CI_COMMIT_SHA:0:7} [skip ci]" || echo "No changes to commit"
+        git commit -m "ci: update image tag to $CI_COMMIT_SHA_SHORT [skip ci]" || echo "No changes to commit"
 
         echo "Pushing changes..."
         git remote set-url origin "https://x-access-token:$${GITHUB_TOKEN}@github.com/wisflux/attendee.git"
@@ -86,7 +83,7 @@ steps:
         echo "Creating/updating tags..."
         git tag -d prod 2>/dev/null || true
         git tag prod
-        git tag "prod-${CI_COMMIT_SHA}"
+        git tag "prod-$CI_COMMIT_SHA"
         git push origin --tags -f
 
         echo "Changes committed and pushed"
@@ -128,6 +125,6 @@ steps:
         echo "ArgoCD sync triggered for $${ARGOCD_APP_NAME}"
         echo "=============================================="
         echo "PRODUCTION deployment complete!"
-        echo "Commit: ${CI_COMMIT_SHA}"
-        echo "Image: wisfluxp/attendee:${CI_COMMIT_SHA:0:7}"
+        echo "Commit: $CI_COMMIT_SHA"
+        echo "Image: wisfluxp/attendee:$CI_COMMIT_SHA_SHORT"
         echo "=============================================="
