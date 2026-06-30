@@ -37,7 +37,7 @@ steps:
     commands:
       - |
         set -eu
-        IMAGE_TAG="$CI_COMMIT_SHA_SHORT"
+        IMAGE_TAG="${CI_COMMIT_SHA_SHORT:-${CI_COMMIT_SHA:0:8}}"
         echo "Updating deployment manifests with image tag: $IMAGE_TAG"
 
         for manifest in \
@@ -74,7 +74,8 @@ steps:
           k8s/app/configmap.yaml
 
         echo "Committing changes..."
-        git commit -m "ci: update image tag to $CI_COMMIT_SHA_SHORT [skip ci]" || echo "No changes to commit"
+        SHORT_SHA="${CI_COMMIT_SHA_SHORT:-${CI_COMMIT_SHA:0:8}}"
+        git commit -m "ci: update image tag to $SHORT_SHA [skip ci]" || echo "No changes to commit"
 
         echo "Pushing changes..."
         git remote set-url origin "https://x-access-token:$${GITHUB_TOKEN}@github.com/wisflux/attendee.git"
