@@ -9,6 +9,12 @@ WORKDIR $cwd
 
 ARG DEBIAN_FRONTEND=noninteractive
 
+# Route apt through the in-cluster apt-cacher-ng proxy: the CI runner has no direct
+# egress to the Ubuntu mirrors, but this proxy (in the woodpecker namespace) is
+# allowlisted to reach them. Applies to every apt-get in this stage.
+ARG APT_PROXY=http://apt-cacher-ng.woodpecker.svc.cluster.local:3142
+RUN echo "Acquire::http::Proxy \"${APT_PROXY}\";" > /etc/apt/apt.conf.d/01proxy
+
 #  Install Dependencies
 RUN apt-get update  \
     && apt-get install -y \
