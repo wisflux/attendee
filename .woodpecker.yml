@@ -17,7 +17,7 @@ steps:
         /kaniko/executor
         --context=.
         --dockerfile=Dockerfile
-        --destination=wisfluxp/attendee:${CI_COMMIT_SHA:0:7}
+        --destination=wisfluxp/attendee:$CI_COMMIT_SHA_SHORT
 
   update-manifests:
     depends_on: [kaniko]
@@ -25,7 +25,7 @@ steps:
     commands:
       - |
         set -eu
-        IMAGE_TAG="${CI_COMMIT_SHA:0:7}"
+        IMAGE_TAG="$CI_COMMIT_SHA_SHORT"
         echo "Updating deployment manifests with image tag: $IMAGE_TAG"
         sed -i "s|image: wisfluxp/attendee:.*|image: wisfluxp/attendee:$IMAGE_TAG|" k8s/app/web/deployment.yaml
         sed -i "s|image: wisfluxp/attendee:.*|image: wisfluxp/attendee:$IMAGE_TAG|" k8s/app/worker/deployment.yaml
@@ -52,7 +52,7 @@ steps:
         git add k8s/app/webpage-streamer/deployment.yaml
         git add k8s/app/janitor/cronjob.yaml
 
-        git commit -m "deploy(attendee): update image to ${CI_COMMIT_SHA:0:7} [skip ci]" || echo "No changes to commit"
+        git commit -m "deploy(attendee): update image to $CI_COMMIT_SHA_SHORT [skip ci]" || echo "No changes to commit"
 
         git remote set-url origin "https://x-access-token:$${GITHUB_TOKEN}@github.com/wisflux/attendee.git"
         git push origin HEAD:prod
@@ -91,4 +91,4 @@ steps:
 
         jq -r '.status // "Sync triggered"' /tmp/sync_response.json
         echo "ArgoCD sync triggered for $${ARGOCD_APP_NAME}"
-        echo "Deployment complete! Commit: ${CI_COMMIT_SHA}"
+        echo "Deployment complete! Commit: $CI_COMMIT_SHA_SHORT"
