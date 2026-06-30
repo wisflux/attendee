@@ -9,11 +9,11 @@ WORKDIR $cwd
 
 ARG DEBIAN_FRONTEND=noninteractive
 
-# Route apt through the in-cluster apt-cacher-ng proxy: the CI runner has no direct
-# egress to the Ubuntu mirrors, but this proxy (in the woodpecker namespace) is
-# allowlisted to reach them. Applies to every apt-get in this stage.
 ARG APT_PROXY=http://apt-cacher-ng.woodpecker.svc.cluster.local:3142
 RUN echo "Acquire::http::Proxy \"${APT_PROXY}\";" > /etc/apt/apt.conf.d/01proxy
+
+# Fix DNS: ubuntu:22.04 resolv.conf symlinks to systemd-resolved which doesn't run in kaniko
+RUN printf 'nameserver 10.96.0.10\n' > /etc/resolv.conf
 
 #  Install Dependencies
 RUN apt-get update  \
@@ -71,7 +71,7 @@ RUN wget -q https://storage.googleapis.com/chrome-for-testing-public/134.0.6998.
 RUN apt-get update && apt-get install -y libasound2 libasound2-plugins alsa alsa-utils alsa-oss
 
 # Install Pulseaudio
-RUN apt-get install -y  pulseaudio pulseaudio-utils ffmpeg
+RUN apt-get install -y pulseaudio pulseaudio-utils ffmpeg
 
 # Install Linux Kernel Dev
 RUN apt-get update && apt-get install -y linux-libc-dev
@@ -120,27 +120,19 @@ FROM deps AS build
 # Create non-root user
 RUN useradd -m -u 1000 -s /bin/bash app
 
-# Workdir owned by app in one shot during copy
 ENV project=attendee
 ENV cwd=/$project
 WORKDIR $cwd
 
-# Copy only what you need; set ownership/perm at copy time
 COPY --chown=app:app --chmod=0755 entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY --chown=app:app . .
 
-# Make STATIC_ROOT writeable for the non-root user so collectstatic can run at startup
 RUN mkdir -p "$cwd/staticfiles" && chown -R app:app "$cwd/staticfiles"
 
-# We want the app to be able to dynamically set the chrome policies file.
-# However, chrome will load the file from a hardcoded path in a directory that the app cannot write to.
-# Therefore, we create a symlink at that path that points to a file in /tmp which the app can write to.
 RUN mkdir -p /etc/opt/chrome/policies/managed \
   && ln -s /tmp/attendee-chrome-policies.json /etc/opt/chrome/policies/managed/attendee-chrome-policies.json
 
-# Switch to non-root AFTER copies to avoid permission flakiness
 USER app
 
-# Use tini + entrypoint; CMD can be overridden by compose
 ENTRYPOINT ["/tini","--","/usr/local/bin/entrypoint.sh"]
 CMD ["bash"]
