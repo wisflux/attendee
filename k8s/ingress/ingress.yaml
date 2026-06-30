@@ -39,7 +39,7 @@ spec:
                 name: attendee-web
                 port:
                   number: 8000
-    - host: attendee-minio.apps.wisflux.com
+    - host: attendee-store.apps.wisflux.com
       http:
         paths:
           - path: /
