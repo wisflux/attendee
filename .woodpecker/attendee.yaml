@@ -127,5 +127,5 @@ steps:
         echo "=============================================="
         echo "PRODUCTION deployment complete!"
         echo "Commit: $CI_COMMIT_SHA"
-        echo "Image: wisfluxp/attendee:$CI_COMMIT_SHA_SHORT"
+        echo "Image: wisfluxp/attendee:${CI_COMMIT_SHA_SHORT:-${CI_COMMIT_SHA:0:8}}"
         echo "=============================================="
