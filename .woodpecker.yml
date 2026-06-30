@@ -13,11 +13,7 @@ steps:
     commands:
       - mkdir -p /kaniko/.docker
       - echo "{\"auths\":{\"https://index.docker.io/v1/\":{\"username\":\"$DOCKERHUB_USERNAME\",\"password\":\"$DOCKERHUB_TOKEN\"}}}" > /kaniko/.docker/config.json
-      - >
-        /kaniko/executor
-        --context=.
-        --dockerfile=Dockerfile
-        --destination=wisfluxp/attendee:$CI_COMMIT_SHA_SHORT
+      - /kaniko/executor --context=. --dockerfile=Dockerfile --destination=wisfluxp/attendee:$CI_COMMIT_SHA_SHORT
 
   update-manifests:
     depends_on: [kaniko]
@@ -54,7 +50,7 @@ steps:
 
         git commit -m "deploy(attendee): update image to $CI_COMMIT_SHA_SHORT [skip ci]" || echo "No changes to commit"
 
-        git remote set-url origin "https://x-access-token:$${GITHUB_TOKEN}@github.com/wisflux/attendee.git"
+        git remote set-url origin "https://x-access-token:$GITHUB_TOKEN@github.com/wisflux/attendee.git"
         git push origin HEAD:prod
 
   argocd-sync:
@@ -70,16 +66,14 @@ steps:
     commands:
       - |
         set -eu
-        echo "Syncing ArgoCD application: $${ARGOCD_APP_NAME}..."
+        echo "Syncing ArgoCD application: $ARGOCD_APP_NAME..."
 
-        SERVER="$${ARGOCD_SERVER#https://}"
-        SERVER="$${SERVER#http://}"
-        SERVER="$${SERVER%/}"
+        SERVER=$(echo "$ARGOCD_SERVER" | sed 's|https://||' | sed 's|http://||' | sed 's|/$||')
 
         HTTP_STATUS=$(curl -s -o /tmp/sync_response.json -w "%{http_code}" \
           -X POST \
-          "https://$${SERVER}/api/v1/applications/$${ARGOCD_APP_NAME}/sync" \
-          -H "Authorization: Bearer $${ARGOCD_TOKEN}" \
+          "https://$SERVER/api/v1/applications/$ARGOCD_APP_NAME/sync" \
+          -H "Authorization: Bearer $ARGOCD_TOKEN" \
           -H "Content-Type: application/json" \
           -d '{"prune": false}')
 
@@ -89,6 +83,5 @@ steps:
           exit 1
         fi
 
-        jq -r '.status // "Sync triggered"' /tmp/sync_response.json
-        echo "ArgoCD sync triggered for $${ARGOCD_APP_NAME}"
+        echo "ArgoCD sync triggered for $ARGOCD_APP_NAME"
         echo "Deployment complete! Commit: $CI_COMMIT_SHA_SHORT"
