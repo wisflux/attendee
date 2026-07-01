@@ -28,18 +28,24 @@ CELERY_WORKER_HIJACK_ROOT_LOGGER = False
 
 # Configuration SSL/HTTPS. Defaults to requiring SSL
 DJANGO_SSL_REQUIRE = os.getenv("DJANGO_SSL_REQUIRE", "true") == "true"
+# Always trust X-Forwarded-Proto from nginx ingress so Django sees HTTPS requests correctly.
+# Without this, Django treats proxied HTTPS requests as HTTP, causing CSRF Origin mismatches.
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 if DJANGO_SSL_REQUIRE:
-    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
     SECURE_SSL_REDIRECT = True
     SECURE_HSTS_SECONDS = 60
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
 else:
-    SECURE_PROXY_SSL_HEADER = None
     SECURE_SSL_REDIRECT = False
     SECURE_HSTS_SECONDS = 0
     SESSION_COOKIE_SECURE = False
     CSRF_COOKIE_SECURE = False
+
+# Read CSRF trusted origins from env (comma-separated list of scheme+host, e.g. https://example.com)
+_csrf_trusted_origins = os.getenv("CSRF_TRUSTED_ORIGINS", "")
+if _csrf_trusted_origins:
+    CSRF_TRUSTED_ORIGINS = [o.strip() for o in _csrf_trusted_origins.split(",") if o.strip()]
 
 if os.getenv("DISABLE_EMAIL", "false") != "true":
     EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
