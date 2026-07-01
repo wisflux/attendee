@@ -16,7 +16,7 @@ spec:
     - hosts:
         - meet-auth.apps.wisflux.com
         - attendee.apps.wisflux.com
-        - attendee-minio.apps.wisflux.com
+        - attendee-store.apps.wisflux.com
       secretName: wisflux-apps-tls
   rules:
     - host: meet-auth.apps.wisflux.com
