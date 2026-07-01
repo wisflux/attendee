@@ -20,7 +20,7 @@ spec:
         - name: regcred
       containers:
         - name: worker
-          image: wisfluxp/attendee:f926652c
+          image: wisfluxp/attendee:21024fd8
           command: ["celery", "-A", "attendee", "worker", "-l", "INFO", "--concurrency=4"]
           envFrom:
             - configMapRef:

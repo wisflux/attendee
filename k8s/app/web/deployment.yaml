@@ -20,7 +20,7 @@ spec:
         - name: regcred
       initContainers:
         - name: migrate
-          image: wisfluxp/attendee:f926652c
+          image: wisfluxp/attendee:21024fd8
           command: ["python", "manage.py", "migrate", "--noinput"]
           envFrom:
             - configMapRef:
@@ -32,7 +32,7 @@ spec:
               value: "postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/attendee"
       containers:
         - name: web
-          image: wisfluxp/attendee:f926652c
+          image: wisfluxp/attendee:21024fd8
           command: ["gunicorn", "attendee.wsgi", "--bind", "0.0.0.0:8000", "--workers", "4", "--timeout", "120"]
           ports:
             - containerPort: 8000
