@@ -19,7 +19,7 @@ spec:
             - name: regcred
           containers:
             - name: janitor
-              image: wisfluxp/attendee:8162b8b4
+              image: wisfluxp/attendee:a607a6a6
               command:
                 - python
                 - manage.py
