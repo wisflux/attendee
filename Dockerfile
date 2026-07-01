@@ -10,7 +10,7 @@ WORKDIR $cwd
 ARG DEBIAN_FRONTEND=noninteractive
 
 ARG APT_PROXY=http://apt-cacher-ng.woodpecker.svc.cluster.local:3142
-RUN echo "Acquire::http::Proxy \"${APT_PROXY}\";" > /etc/apt/apt.conf.d/01proxy
+RUN if [ -n "${APT_PROXY}" ]; then echo "Acquire::http::Proxy \"${APT_PROXY}\";" > /etc/apt/apt.conf.d/01proxy; fi
 
 # Fix DNS: ubuntu:22.04 resolv.conf symlinks to systemd-resolved which doesn't run in kaniko
 RUN printf 'nameserver 10.96.0.10\n' > /etc/resolv.conf

@@ -79,7 +79,7 @@ steps:
 
         echo "Pushing changes..."
         git remote set-url origin "https://x-access-token:$${GITHUB_TOKEN}@github.com/wisflux/attendee.git"
-        git push origin HEAD:prod
+        git push origin HEAD:refs/heads/prod
 
         echo "Creating/updating tags..."
         git tag -d prod 2>/dev/null || true
