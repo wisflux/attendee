@@ -1,4 +1,4 @@
-# Rebuild trigger: re-run pipeline now that kaniko tag injection is fixed (9d18638f)
+# Rebuild trigger: apt-cacher-ng transient 503 resolved, retrying build
 when:
   - event: push
     branch: prod
