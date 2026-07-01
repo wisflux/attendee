@@ -55,6 +55,8 @@ if os.getenv("DISABLE_EMAIL", "false") != "true":
     EMAIL_PORT = 587
     EMAIL_USE_TLS = True
     DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "noreply@mail.attendee.dev")
+else:
+    ACCOUNT_EMAIL_VERIFICATION = "none"
 
 ADMINS = []
 
