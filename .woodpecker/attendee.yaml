@@ -24,12 +24,14 @@ steps:
     commands:
       - mkdir -p /kaniko/.docker
       - echo "{\"auths\":{\"https://index.docker.io/v1/\":{\"username\":\"$DOCKERHUB_USERNAME\",\"password\":\"$DOCKERHUB_TOKEN\"}}}" > /kaniko/.docker/config.json
-      - >
-        /kaniko/executor
-        --context=.
-        --dockerfile=Dockerfile
-        --destination=wisfluxp/attendee:$CI_COMMIT_SHA_SHORT
-        --destination=wisfluxp/attendee:latest
+      - |
+        IMAGE_TAG="${CI_COMMIT_SHA_SHORT:-${CI_COMMIT_SHA:0:8}}"
+        echo "Building image tag: $IMAGE_TAG"
+        /kaniko/executor \
+          --context=. \
+          --dockerfile=Dockerfile \
+          --destination=wisfluxp/attendee:${IMAGE_TAG} \
+          --destination=wisfluxp/attendee:latest
 
   update-manifests:
     depends_on: [kaniko-attendee]
