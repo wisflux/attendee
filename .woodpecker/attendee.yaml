@@ -1,3 +1,4 @@
+# Rebuild trigger: re-run pipeline now that kaniko tag injection is fixed (9d18638f)
 when:
   - event: push
     branch: prod
