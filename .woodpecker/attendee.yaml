@@ -1,4 +1,4 @@
-# Rebuild trigger: apt-cacher-ng transient 503 resolved, retrying build
+# Rebuild trigger: get a real CI-built tag to replace the manual image and fix bot-pod ConfigMap drift
 when:
   - event: push
     branch: prod
