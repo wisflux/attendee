@@ -9,7 +9,7 @@ data:
   AWS_RECORDING_STORAGE_BUCKET_NAME: "attendee-recordings"
   AWS_DEFAULT_REGION: "us-east-1"
   AWS_ENDPOINT_URL: "http://minio:9000"
-  AWS_S3_ENDPOINT_URL: "https://attendee-minio.apps.wisflux.com"
+  AWS_S3_ENDPOINT_URL: "https://attendee-store.apps.wisflux.com"
   STORAGE_PROTOCOL: "s3"
   ENABLE_CHROME_SANDBOX: "false"
   LAUNCH_BOT_METHOD: "kubernetes"
