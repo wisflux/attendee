@@ -1,4 +1,4 @@
-# Rebuild trigger: get a real CI-built tag to replace the manual image and fix bot-pod ConfigMap drift
+# Rebuild trigger: apt-cacher-ng restarted to clear stale DNS cache pinned to a bad mirror IP
 when:
   - event: push
     branch: prod
