@@ -1,4 +1,4 @@
-# Rebuild trigger: single-destination push to work around kaniko dropping the first tag
+# Rebuild trigger: use Woodpecker-native ${CI_COMMIT_SHA} substitution like auth-server's working pipeline
 when:
   - event: push
     branch: prod
@@ -22,17 +22,15 @@ steps:
         from_secret: DOCKERHUB_USERNAME
       DOCKERHUB_TOKEN:
         from_secret: DOCKERHUB_TOKEN
-      GIT_COMMIT: ${CI_COMMIT_SHA}
     commands:
       - mkdir -p /kaniko/.docker
       - echo "{\"auths\":{\"https://index.docker.io/v1/\":{\"username\":\"$DOCKERHUB_USERNAME\",\"password\":\"$DOCKERHUB_TOKEN\"}}}" > /kaniko/.docker/config.json
-      - |
-        IMAGE_TAG=$(echo "$GIT_COMMIT" | cut -c1-8)
-        echo "Building image tag: $IMAGE_TAG"
-        /kaniko/executor \
-          --context=. \
-          --dockerfile=Dockerfile \
-          --destination=wisfluxp/attendee:${IMAGE_TAG}
+      - >
+        /kaniko/executor
+        --context=.
+        --dockerfile=Dockerfile
+        --destination=wisfluxp/attendee:${CI_COMMIT_SHA:0:8}
+        --destination=wisfluxp/attendee:latest
 
   update-manifests:
     depends_on: [kaniko-attendee]
