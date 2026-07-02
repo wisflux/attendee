@@ -1,4 +1,4 @@
-# Rebuild trigger: apt-cacher-ng restarted to clear stale DNS cache pinned to a bad mirror IP
+# Rebuild trigger: single-destination push to work around kaniko dropping the first tag
 when:
   - event: push
     branch: prod
@@ -32,8 +32,7 @@ steps:
         /kaniko/executor \
           --context=. \
           --dockerfile=Dockerfile \
-          --destination=wisfluxp/attendee:${IMAGE_TAG} \
-          --destination=wisfluxp/attendee:latest
+          --destination=wisfluxp/attendee:${IMAGE_TAG}
 
   update-manifests:
     depends_on: [kaniko-attendee]
