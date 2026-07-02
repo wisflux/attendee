@@ -42,10 +42,17 @@ spec:
     - host: attendee-store.apps.wisflux.com
       http:
         paths:
-          - path: /
+          - path: /console
             pathType: Prefix
             backend:
               service:
                 name: minio
                 port:
                   number: 9001
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: minio
+                port:
+                  number: 9000
