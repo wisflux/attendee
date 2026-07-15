@@ -40,6 +40,7 @@ INSTALLED_APPS = [
     "allauth.socialaccount",
     "accounts",
     "bots",
+    "notes",
     "rest_framework",
     "concurrency",
     "allauth.socialaccount.providers.google",
