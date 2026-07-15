@@ -110,8 +110,8 @@ class Meeting(models.Model):
 
     class Meta:
         indexes = [
-            models.Index(fields=["owner", "-started_at"]),          # fast per-user list
-            models.Index(fields=["org_id", "-started_at"]),         # future org-wide list
+            models.Index(fields=["owner", "-started_at"], name="mtg_owner_started_idx"),   # fast per-user list
+            models.Index(fields=["org_id", "-started_at"], name="mtg_org_started_idx"),     # future org-wide list
         ]
         constraints = [
             # One LIVE-or-bot meeting row per (user, bot), ignoring soft-deleted rows. Partial:
@@ -152,7 +152,7 @@ class LiveUtterance(models.Model):
     class Meta:
         # id is the tiebreaker so two chunks sharing a timestamp_ms have a stable order
         # (mic+system share one clock and WILL collide on a ms). Reads ORDER BY the same.
-        indexes = [models.Index(fields=["meeting", "timestamp_ms", "id"])]
+        indexes = [models.Index(fields=["meeting", "timestamp_ms", "id"], name="liveutt_meeting_ts_idx")]
         constraints = [
             # source_uuid unique PER MEETING (not global) so a client sessionId collision across
             # meetings can't overwrite another meeting's line; NULLs don't collide.
