@@ -686,6 +686,7 @@ class RecordingViews(models.TextChoices):
 class SessionTypes(models.IntegerChoices):
     BOT = 1, "Bot"
     APP_SESSION = 2, "App Session"
+    LOCAL = 3, "Local Recording"  # desktop local recording (mic + system audio uploaded as chunks)
 
 
 class TranscriptionSettings:
