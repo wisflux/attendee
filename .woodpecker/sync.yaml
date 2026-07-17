@@ -1,8 +1,11 @@
+# Only k8s/app is auto-synced. k8s/platform (stateful infra, ingress) and
+# k8s/bootstrap (secrets, RBAC, one-shot jobs) are applied deliberately, not
+# on every push — see k8s/bootstrap/README.md.
 when:
   - event: push
     branch: prod
     path:
-      - "k8s/**"
+      - "k8s/app/**"
 
 steps:
   argocd-sync:
