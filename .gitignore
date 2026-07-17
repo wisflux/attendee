@@ -99,8 +99,10 @@ local_settings.py
 
 .env
 db.sqlite3
-k8s/app/regcred.yaml
-k8s/app/namespace-admin.yaml
+# Real bootstrap secrets live only in the cluster. Only *.example.yaml is tracked.
+k8s/bootstrap/secrets/*.yaml
+!k8s/bootstrap/secrets/*.example.yaml
+k8s/bootstrap/namespace-admin.yaml
 *-kubeconfig.yaml
 
 custom/

@@ -1,10 +1,11 @@
-# Application workloads — the only path CI auto-syncs on every deploy.
-# Contains nothing whose lifecycle differs from a code push: no secrets,
-# no RBAC, no namespace, no one-shot jobs. Those live in k8s/bootstrap.
+# Stateful infrastructure (Postgres, MinIO, Redis) and the shared ingress.
+# Deliberately NOT synced by CI: these change on their own schedule, and a
+# careless sync here can disrupt storage or routing. Sync manually from the
+# ArgoCD UI/CLI after reviewing the diff.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: attendee
+  name: attendee-platform
   namespace: argocd
   finalizers:
     - resources-finalizer.argocd.argoproj.io
@@ -12,10 +13,8 @@ spec:
   project: default
   source:
     repoURL: git@github.com:wisflux/attendee.git
-    # Fully qualified: a tag named "prod" also exists and CI force-pushes it,
-    # so a bare "prod" is an ambiguous ref.
     targetRevision: refs/heads/prod
-    path: k8s/app
+    path: k8s/platform
   destination:
     server: https://kubernetes.default.svc
     namespace: meeting-utility
