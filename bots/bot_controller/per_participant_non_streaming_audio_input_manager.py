@@ -4,7 +4,8 @@ import time
 from datetime import datetime, timedelta
 
 import numpy as np
-import webrtcvad
+
+from bots.bot_controller.silero_vad import SileroVoiceActivityDetector
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ class PerParticipantNonStreamingAudioInputManager:
 
         self.UTTERANCE_SIZE_LIMIT = utterance_size_limit
         self.SILENCE_DURATION_LIMIT = silence_duration_limit
-        self.vad = webrtcvad.Vad()
+        self.vad = SileroVoiceActivityDetector()
 
         self.should_print_diagnostic_info = should_print_diagnostic_info
         self.reset_diagnostic_info()
@@ -46,7 +47,6 @@ class PerParticipantNonStreamingAudioInputManager:
             "total_chunks_marked_as_silent_due_to_vad": 0,
             "total_chunks_marked_as_silent_due_to_rms_being_small": 0,
             "total_chunks_marked_as_silent_due_to_rms_being_zero": 0,
-            "total_chunks_too_large_for_vad": 0,
             "total_chunks_that_caused_vad_error": 0,
             "total_audio_chunks_sent": 0,
             "total_audio_chunks_not_sent_because_participant_not_found": 0,
@@ -78,19 +78,15 @@ class PerParticipantNonStreamingAudioInputManager:
                 None,
             )
 
-    def is_speech(self, chunk_bytes):
+    def is_speech(self, speaker_id, chunk_bytes):
         try:
-            # The VAD can handle a max of 30 ms of audio. If it is larger than that, just return True
-            if len(chunk_bytes) > 30 * self.sample_rate // 1000:
-                self.diagnostic_info["total_chunks_too_large_for_vad"] += 1
-                return True
-            return self.vad.is_speech(chunk_bytes, self.sample_rate)
+            return self.vad.is_speech(speaker_id, chunk_bytes, self.sample_rate)
         except Exception as e:
             logger.exception("Error in VAD: " + str(e))
             self.diagnostic_info["total_chunks_that_caused_vad_error"] += 1
             return True
 
-    def silence_detected(self, chunk_bytes):
+    def silence_detected(self, speaker_id, chunk_bytes):
         rms_value = calculate_normalized_rms(chunk_bytes)
         if rms_value == 0:
             self.diagnostic_info["total_chunks_marked_as_silent_due_to_rms_being_zero"] += 1
@@ -98,13 +94,13 @@ class PerParticipantNonStreamingAudioInputManager:
         if rms_value < 0.01:
             self.diagnostic_info["total_chunks_marked_as_silent_due_to_rms_being_small"] += 1
             return True
-        if not self.is_speech(chunk_bytes):
+        if not self.is_speech(speaker_id, chunk_bytes):
             self.diagnostic_info["total_chunks_marked_as_silent_due_to_vad"] += 1
             return True
         return False
 
     def process_chunk(self, speaker_id, chunk_time, chunk_bytes):
-        audio_is_silent = self.silence_detected(chunk_bytes) if chunk_bytes else True
+        audio_is_silent = self.silence_detected(speaker_id, chunk_bytes) if chunk_bytes else True
 
         # Initialize buffer and timing for new speaker
         if speaker_id not in self.utterances or len(self.utterances[speaker_id]) == 0:
@@ -158,3 +154,4 @@ class PerParticipantNonStreamingAudioInputManager:
             self.utterances[speaker_id] = bytearray()
             del self.first_nonsilent_audio_time[speaker_id]
             del self.last_nonsilent_audio_time[speaker_id]
+            self.vad.reset(speaker_id)

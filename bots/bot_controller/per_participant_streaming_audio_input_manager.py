@@ -2,8 +2,8 @@ import logging
 import time
 
 import numpy as np
-import webrtcvad
 
+from bots.bot_controller.silero_vad import SileroVoiceActivityDetector
 from bots.models import (
     Credentials,
     TranscriptionProviders,
@@ -69,7 +69,7 @@ class PerParticipantStreamingAudioInputManager:
         else:
             self.SILENCE_DURATION_LIMIT = 300  # 5 minutes of inactivity
 
-        self.vad = webrtcvad.Vad()
+        self.vad = SileroVoiceActivityDetector()
         self.transcription_provider = transcription_provider
         self.streaming_transcribers = {}
         self.last_nonsilent_audio_time = {}
@@ -82,10 +82,10 @@ class PerParticipantStreamingAudioInputManager:
         # Create utterance handler for providers that need it (like Kyutai)
         self.utterance_handler = DefaultUtteranceHandler(bot=bot, get_participant_callback=get_participant_callback, sample_rate=sample_rate)
 
-    def silence_detected(self, chunk_bytes):
+    def silence_detected(self, speaker_id, chunk_bytes):
         if calculate_normalized_rms(chunk_bytes) < 0.0025:
             return True
-        return not self.vad.is_speech(chunk_bytes, self.sample_rate)
+        return not self.vad.is_speech(speaker_id, chunk_bytes, self.sample_rate)
 
     def get_deepgram_api_key(self):
         deepgram_credentials_record = self.project.credentials.filter(credential_type=Credentials.CredentialTypes.DEEPGRAM).first()
@@ -179,7 +179,7 @@ class PerParticipantStreamingAudioInputManager:
         # For Deepgram: Use pre-filtering to reduce API costs
         if self.transcription_provider == TranscriptionProviders.KYUTAI:
             # Still detect silence for monitoring purposes, but send all audio
-            audio_is_silent = self.silence_detected(chunk_bytes)
+            audio_is_silent = self.silence_detected(speaker_id, chunk_bytes)
 
             if not audio_is_silent:
                 self.last_nonsilent_audio_time[speaker_id] = time.time()
@@ -199,7 +199,7 @@ class PerParticipantStreamingAudioInputManager:
                         del self.streaming_transcribers[speaker_id]
         else:
             # Deepgram and other providers: use VAD pre-filtering
-            audio_is_silent = self.silence_detected(chunk_bytes)
+            audio_is_silent = self.silence_detected(speaker_id, chunk_bytes)
 
             if not audio_is_silent:
                 self.last_nonsilent_audio_time[speaker_id] = time.time()
@@ -235,6 +235,7 @@ class PerParticipantStreamingAudioInputManager:
 
         for speaker_id in speakers_to_remove:
             del self.streaming_transcribers[speaker_id]
+            self.vad.reset(speaker_id)
             # Also clean up timing data
             if speaker_id in self.last_nonsilent_audio_time:
                 del self.last_nonsilent_audio_time[speaker_id]
@@ -246,4 +247,5 @@ class PerParticipantStreamingAudioInputManager:
             oldest_speaker_id, oldest_transcriber = min(self.streaming_transcribers.items(), key=lambda item: item[1].last_send_time)
             oldest_transcriber.finish()
             del self.streaming_transcribers[oldest_speaker_id]
+            self.vad.reset(oldest_speaker_id)
             logger.info(f"Stopped oldest streaming transcriber for speaker {oldest_speaker_id}")
