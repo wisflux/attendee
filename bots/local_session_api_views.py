@@ -50,8 +50,9 @@ MIC_PARTICIPANT_UUID = MIC_SOURCE
 SYSTEM_PARTICIPANT_UUID = SYSTEM_SOURCE
 SYSTEM_PARTICIPANT_NAME = "Others"
 
-# webrtcvad only understands these rates, and the desktop should be sending 16kHz anyway.
-SUPPORTED_SAMPLE_RATES = (8000, 16000, 32000, 48000)
+# The VAD decimates to 16 kHz by an integer factor, so every accepted rate must be a
+# multiple of it. 8 kHz was accepted when webrtcvad ran the VAD; it cannot be, now.
+SUPPORTED_SAMPLE_RATES = (16000, 32000, 48000)
 # A 1-2s segment is ~64KB at 16kHz. The cap keeps a malformed or hostile upload from
 # turning into a giant celery/Redis payload.
 MAX_SEGMENT_BYTES = 1_000_000
