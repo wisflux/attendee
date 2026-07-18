@@ -1192,6 +1192,8 @@ class Bot(models.Model):
     def object_id_prefix(self):
         if self.session_type == SessionTypes.BOT:
             return "bot_"
+        elif self.session_type == SessionTypes.LOCAL:
+            return "local_"
         else:
             return "app_"
 
