@@ -83,19 +83,27 @@ def finalize_local_session(self, bot_id):
 
 
 def _drain(client, bot_id, source, is_final):
-    bot = Bot.objects.get(id=bot_id)
-    recording = Recording.objects.filter(bot=bot, is_default_recording=True).first()
-    if recording is None:
-        logger.warning(f"Local session {bot_id}: no default recording, dropping audio")
+    try:
+        bot = Bot.objects.get(id=bot_id)
+    except Bot.DoesNotExist:
+        # Session was deleted while audio was still queued -- drop it quietly, don't retry.
+        store.clear_session_state(bot_id)
         return
+    recording = Recording.objects.filter(bot=bot, is_default_recording=True).first()
     participant = Participant.objects.filter(bot=bot, uuid=source).first()
-    if participant is None:
-        logger.warning(f"Local session {bot_id}: no participant {source}, dropping audio")
+    if recording is None or participant is None:
+        # Data was deleted (delete_data removes the recording contents + participants) -- the
+        # session is gone; clear any leftover Redis state and stop.
+        logger.info(f"Local session {bot_id}/{source}: recording/participant gone, dropping audio")
+        store.clear_session_state(bot_id)
         return
 
     tail = store.load_tail(client, bot_id, source)
     segments = store.pop_segments(
-        client, bot_id, source, tail["last_sequence"],
+        client,
+        bot_id,
+        source,
+        tail["last_sequence"],
         on_replay=lambda seq: logger.info(f"Local session {bot_id}/{source}: dropping replayed segment {seq}"),
     )
     if not segments and not (is_final and tail["audio"]):
@@ -134,8 +142,12 @@ def _drain(client, bot_id, source, is_final):
     remaining = manager.utterances.get(source, b"")
     unconsumed = bytes(audio[consumed:])  # a partial frame we could not hand to the VAD yet
     store.save_tail(
-        client, bot_id, source,
+        client,
+        bot_id,
+        source,
         bytes(remaining) + unconsumed,
         offset_of_buffered(manager, source, epoch),
-        end_offset_ms, last_sequence, sample_rate,
+        end_offset_ms,
+        last_sequence,
+        sample_rate,
     )

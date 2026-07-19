@@ -23,6 +23,7 @@ LOCAL_SESSION_SOURCES = (MIC_SOURCE, SYSTEM_SOURCE)
 
 TAIL_TTL_SECONDS = 3600
 LOCK_TTL_SECONDS = 120
+QUEUE_TTL_SECONDS = 3600  # so an abandoned session's queued audio can't leak forever
 MAX_SEGMENTS_PER_DRAIN = 200
 
 
@@ -50,7 +51,20 @@ def enqueue_segment(bot_id, source, sequence, audio, sample_rate, offset_ms):
         "sample_rate": sample_rate,
         "offset_ms": offset_ms,
     }
-    redis_client().rpush(queue_key(bot_id, source), json.dumps(payload))
+    client = redis_client()
+    key = queue_key(bot_id, source)
+    client.rpush(key, json.dumps(payload))
+    client.expire(key, QUEUE_TTL_SECONDS)
+
+
+def clear_session_state(bot_id):
+    """Drop every Redis key for a session. Called when a session is deleted so its queue,
+    tail and lock don't outlive the DB rows (and so an in-flight drain finds nothing)."""
+    client = redis_client()
+    keys = []
+    for source in LOCAL_SESSION_SOURCES:
+        keys += [queue_key(bot_id, source), tail_key(bot_id, source), lock_key(bot_id, source)]
+    client.delete(*keys)
 
 
 def load_tail(client, bot_id, source):
