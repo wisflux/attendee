@@ -25,7 +25,7 @@ from bots.local_audio_processing import (
     flush_remaining,
     offset_of_buffered,
 )
-from bots.models import Bot, Participant, Recording, RecordingManager
+from bots.models import Bot, BotEventManager, BotEventTypes, BotStates, Participant, Recording, RecordingManager
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +72,14 @@ def finalize_local_session(self, bot_id):
     recording = Recording.objects.filter(bot=bot, is_default_recording=True).first()
     if recording is not None:
         RecordingManager.set_recording_complete(recording)
+
+    # End the session -- but only from READY, and only after the recording is COMPLETE.
+    # The state guard makes a retried/duplicate stop a no-op instead of an invalid-transition
+    # error; completing the recording first stops the post-meeting transition from marking a
+    # local (file-less) recording FAILED.
+    bot.refresh_from_db()
+    if bot.state == BotStates.READY:
+        BotEventManager.create_event(bot=bot, event_type=BotEventTypes.LOCAL_SESSION_ENDED)
 
 
 def _drain(client, bot_id, source, is_final):
