@@ -9,11 +9,15 @@ that meeting bots already use.
 import logging
 
 from django.db import transaction
+from django.db.models import Value
+from django.db.models.functions import Coalesce
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .authentication import ApiKeyAuthentication
+from .bots_api_views import TranscriptView
 from .local_audio_processing import BYTES_PER_SAMPLE
 from .local_session_store import MIC_SOURCE, SYSTEM_SOURCE, enqueue_segment
 from .models import (
@@ -28,6 +32,7 @@ from .models import (
     TranscriptionTypes,
 )
 from .tasks.process_local_audio_segment_task import drain_local_session_audio, finalize_local_session
+from .team_day_user_auth import decode_user_id
 from .throttling import ProjectPostThrottle
 
 logger = logging.getLogger(__name__)
@@ -71,6 +76,10 @@ class LocalSessionCreateView(APIView):
     throttle_classes = [ProjectPostThrottle]
 
     def post(self, request):
+        # Stamped from the verified token only -- never from the body -- so a session can only
+        # ever be owned by the user who created it.
+        owner_user_id = decode_user_id(request)
+
         # Blank by default -> no speaker label (single-mic in-person). The desktop passes
         # "You" only when it also captures system audio and wants the You/Others split.
         speaker_name = request.data.get("speaker_name") or ""
@@ -86,6 +95,7 @@ class LocalSessionCreateView(APIView):
                 meeting_url=LOCAL_SESSION_MEETING_URL,
                 name=LOCAL_SESSION_NAME,
                 session_type=SessionTypes.LOCAL,
+                owner_user_id=owner_user_id,
             )
 
             recording = Recording.objects.create(
@@ -105,13 +115,28 @@ class LocalSessionCreateView(APIView):
         return Response({"id": bot.object_id}, status=status.HTTP_201_CREATED)
 
 
-def find_local_session(request, object_id):
-    """A local session is only reachable through an API key belonging to its project."""
+def find_local_session(request, object_id, owner_user_id):
+    """A local session is reachable only through an API key belonging to its project AND by its
+    owner. Filtering on the owner (rather than checking it after) means a mismatch is
+    indistinguishable from a missing session -- a 404 never confirms another user's session
+    exists."""
     return Bot.objects.filter(
         object_id=object_id,
         project=request.auth.project,
         session_type=SessionTypes.LOCAL,
+        owner_user_id=owner_user_id,
     ).first()
+
+
+def mark_session_alive(bot_id):
+    """Stamp the session's heartbeat so the idle reaper can tell a live (or paused) session
+    from a crashed one. A single UPDATE -- no read-modify-write -- so concurrent mic and
+    system uploads never contend on the row's concurrency version."""
+    now_ts = int(timezone.now().timestamp())
+    Bot.objects.filter(id=bot_id).update(
+        first_heartbeat_timestamp=Coalesce("first_heartbeat_timestamp", Value(now_ts)),
+        last_heartbeat_timestamp=now_ts,
+    )
 
 
 class LocalSessionAudioView(APIView):
@@ -119,7 +144,8 @@ class LocalSessionAudioView(APIView):
     throttle_classes = [ProjectPostThrottle]
 
     def post(self, request, object_id):
-        bot = find_local_session(request, object_id)
+        owner_user_id = decode_user_id(request)
+        bot = find_local_session(request, object_id, owner_user_id)
         if bot is None:
             return Response({"error": "Local session not found"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -168,7 +194,25 @@ class LocalSessionAudioView(APIView):
         # off-request so the desktop can keep streaming without ever waiting on us.
         enqueue_segment(bot.id, source, sequence, audio, sample_rate, offset_ms)
         drain_local_session_audio.delay(bot.id, source)
+        # An upload is proof the desktop is alive, so it doubles as a heartbeat.
+        mark_session_alive(bot.id)
         return Response(status=status.HTTP_202_ACCEPTED)
+
+
+class LocalSessionHeartbeatView(APIView):
+    authentication_classes = [ApiKeyAuthentication]
+    throttle_classes = [ProjectPostThrottle]
+
+    def post(self, request, object_id):
+        owner_user_id = decode_user_id(request)
+        bot = find_local_session(request, object_id, owner_user_id)
+        if bot is None:
+            return Response({"error": "Local session not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Pause stops audio uploads, so without this ping the idle reaper could not tell a
+        # paused session from a crashed one. The desktop pings while open but not uploading.
+        mark_session_alive(bot.id)
+        return Response(status=status.HTTP_200_OK)
 
 
 class LocalSessionStopView(APIView):
@@ -176,7 +220,8 @@ class LocalSessionStopView(APIView):
     throttle_classes = [ProjectPostThrottle]
 
     def post(self, request, object_id):
-        bot = find_local_session(request, object_id)
+        owner_user_id = decode_user_id(request)
+        bot = find_local_session(request, object_id, owner_user_id)
         if bot is None:
             return Response({"error": "Local session not found"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -189,3 +234,14 @@ class LocalSessionStopView(APIView):
 
         logger.info(f"Stopped local session {bot.object_id}")
         return Response({"id": bot.object_id}, status=status.HTTP_200_OK)
+
+
+class LocalSessionTranscriptView(TranscriptView):
+    """Owner-gated live transcript. Reuses the bot transcript logic unchanged, but first
+    confirms the caller's token owns this local session so one user can't poll another's."""
+
+    def get(self, request, object_id):
+        owner_user_id = decode_user_id(request)
+        if find_local_session(request, object_id, owner_user_id) is None:
+            return Response({"error": "Local session not found"}, status=status.HTTP_404_NOT_FOUND)
+        return super().get(request, object_id)

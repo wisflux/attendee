@@ -875,6 +875,10 @@ class Bot(models.Model):
 
     zoom_rtms_stream_id = models.CharField(max_length=255, null=True, blank=True)
     session_type = models.IntegerField(choices=SessionTypes.choices, default=SessionTypes.BOT, db_default=SessionTypes.BOT, null=False)
+    # The team.day user this session belongs to (stamped from the caller's verified JWT, never
+    # from client input). Stored as a string to match how the desktop already stringifies the
+    # id. NULL for bots created before this feature and for any dispatch without a user token.
+    owner_user_id = models.CharField(max_length=255, null=True, blank=True, editable=False)
 
     def delete_data(self):
         # Check if bot is in a state where the data deleted event can be created
@@ -1230,6 +1234,9 @@ class Bot(models.Model):
         # The partial index will exclude bots without a join_at which should speed up the query and reduce the space used by the index.
         indexes = [
             models.Index(fields=["join_at"], name="bot_join_at_idx", condition=models.Q(join_at__isnull=False)),
+            # Owner-scoped history lists a user's sessions by owner_user_id. A partial index keeps
+            # the (large) population of owner-less bots out of it.
+            models.Index(fields=["owner_user_id"], name="bot_owner_user_id_idx", condition=models.Q(owner_user_id__isnull=False)),
         ]
 
         # Within a project, we don't want to allow bots that aren't in apost-meeting state with the same deduplication key.

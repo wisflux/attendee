@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import bots_api_views, local_session_api_views
+from . import local_session_api_views
 
 urlpatterns = [
     path(
@@ -14,15 +14,19 @@ urlpatterns = [
         name="local-session-audio",
     ),
     path(
+        "local_sessions/<str:object_id>/heartbeat",
+        local_session_api_views.LocalSessionHeartbeatView.as_view(),
+        name="local-session-heartbeat",
+    ),
+    path(
         "local_sessions/<str:object_id>/stop",
         local_session_api_views.LocalSessionStopView.as_view(),
         name="local-session-stop",
     ),
-    # The bot transcript view keys off object_id + project and ignores session_type,
-    # so local sessions reuse it unchanged.
+    # Reuses the bot transcript logic but adds the owner check (see LocalSessionTranscriptView).
     path(
         "local_sessions/<str:object_id>/transcript",
-        bots_api_views.TranscriptView.as_view(),
+        local_session_api_views.LocalSessionTranscriptView.as_view(),
         name="local-session-transcript",
     ),
 ]
