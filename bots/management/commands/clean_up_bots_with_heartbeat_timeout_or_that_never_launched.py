@@ -8,9 +8,15 @@ from django.db import models
 from django.utils import timezone
 from kubernetes import client, config
 
-from bots.models import Bot, BotEventManager, BotEventSubTypes, BotEventTypes, SessionTypes
+from bots.models import Bot, BotEventManager, BotEventSubTypes, BotEventTypes, BotStates, SessionTypes
+from bots.tasks.process_local_audio_segment_task import finalize_local_session
 
 logger = logging.getLogger(__name__)
+
+# How long a local session may go without a heartbeat (audio upload or explicit ping) before
+# it is assumed abandoned. Matches the meeting-bot heartbeat timeout; the desktop pings well
+# inside it even while paused, so only a crashed/killed desktop trips this.
+LOCAL_SESSION_IDLE_TIMEOUT_SECONDS = 600
 
 
 class Command(BaseCommand):
@@ -82,6 +88,7 @@ class Command(BaseCommand):
         self.terminate_bots_with_heartbeat_timeout()
         self.terminate_bots_with_global_runtime_timeout()
         self.terminate_bots_that_never_launched()
+        self.finalize_stale_local_sessions()
 
     def terminate_bots_with_global_runtime_timeout(self):
         logger.info("Terminating bots with global runtime timeout...")
@@ -89,7 +96,8 @@ class Command(BaseCommand):
 
         try:
             runtime_q_filter = models.Q(first_heartbeat_timestamp__isnull=False) & models.Q(last_heartbeat_timestamp__isnull=False)
-            problem_bots = Bot.objects.filter(~BotEventManager.get_post_meeting_states_q_filter() & runtime_q_filter).annotate(runtime_seconds=models.F("last_heartbeat_timestamp") - models.F("first_heartbeat_timestamp")).filter(runtime_seconds__gt=global_runtime_timeout_seconds)
+            # Local sessions heartbeat too, but they are ended gracefully (finalize_stale_local_sessions), never FATAL_ERROR.
+            problem_bots = Bot.objects.filter(~BotEventManager.get_post_meeting_states_q_filter() & runtime_q_filter).exclude(session_type=SessionTypes.LOCAL).annotate(runtime_seconds=models.F("last_heartbeat_timestamp") - models.F("first_heartbeat_timestamp")).filter(runtime_seconds__gt=global_runtime_timeout_seconds)
 
             logger.info(f"Found {problem_bots.count()} bots with global runtime timeout")
 
@@ -113,7 +121,8 @@ class Command(BaseCommand):
 
             # Find non post-meeting bots where the last heartbeat is over 10 minutes ago
             heartbeat_timeout_q_filter = models.Q(last_heartbeat_timestamp__isnull=False) & models.Q(last_heartbeat_timestamp__lt=ten_minutes_ago_timestamp)
-            problem_bots = Bot.objects.filter(~BotEventManager.get_post_meeting_states_q_filter() & heartbeat_timeout_q_filter)
+            # Local sessions heartbeat too, but they are ended gracefully (finalize_stale_local_sessions), never FATAL_ERROR.
+            problem_bots = Bot.objects.filter(~BotEventManager.get_post_meeting_states_q_filter() & heartbeat_timeout_q_filter).exclude(session_type=SessionTypes.LOCAL)
 
             logger.info(f"Found {problem_bots.count()} bots with heartbeat timeout")
 
@@ -162,3 +171,31 @@ class Command(BaseCommand):
 
         except Exception as e:
             logger.error(f"Failed to terminate bots that never launched: {str(e)}")
+
+    def finalize_stale_local_sessions(self):
+        """Gracefully close local sessions whose desktop stopped heartbeating (crashed, killed
+        or network-dropped). There is no pod to terminate -- we just run the same finalize the
+        desktop's /stop would, so a partial transcript is kept and the session lists and deletes
+        cleanly instead of sitting in READY forever."""
+        logger.info("Finalizing stale local sessions...")
+
+        try:
+            idle_cutoff = int(timezone.now().timestamp()) - LOCAL_SESSION_IDLE_TIMEOUT_SECONDS
+            created_cutoff = timezone.now() - timezone.timedelta(seconds=LOCAL_SESSION_IDLE_TIMEOUT_SECONDS)
+
+            # Either it heartbeat once and then went quiet, or it never sent a single upload
+            # (created, then abandoned before the first chunk ever arrived).
+            went_quiet = models.Q(last_heartbeat_timestamp__isnull=False, last_heartbeat_timestamp__lt=idle_cutoff)
+            never_started = models.Q(last_heartbeat_timestamp__isnull=True, created_at__lt=created_cutoff)
+            stale_bots = Bot.objects.filter(session_type=SessionTypes.LOCAL, state=BotStates.READY).filter(went_quiet | never_started)
+
+            logger.info(f"Found {stale_bots.count()} stale local sessions")
+
+            for bot in stale_bots:
+                logger.info(f"Finalizing stale local session {bot.object_id}")
+                finalize_local_session.delay(bot.id)
+
+            logger.info("Finished finalizing stale local sessions")
+
+        except Exception as e:
+            logger.error(f"Failed to finalize stale local sessions: {str(e)}")
