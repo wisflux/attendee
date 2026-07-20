@@ -60,6 +60,7 @@ from .serializers import (
     TranscriptUtteranceSerializer,
 )
 from .tasks import process_async_transcription
+from .team_day_user_auth import optional_user_id
 from .throttling import ProjectPostThrottle
 from .utils import split_utterances_on_turn_taking
 
@@ -299,9 +300,19 @@ class BotListCreateView(GenericAPIView):
         tags=["Bots"],
     )
     def post(self, request):
+        # Optional: only the desktop sends a member token. API customers send none and their
+        # bots stay unowned, exactly as before. Verified before creating anything so a bad
+        # token fails the request rather than producing a bot nobody can find.
+        owner_user_id = optional_user_id(request)
+
         bot, error = create_bot(data=request.data, source=BotCreationSource.API, project=request.auth.project)
         if error:
             return Response(error, status=status.HTTP_400_BAD_REQUEST)
+
+        if owner_user_id:
+            # Single UPDATE: never a read-modify-write on the row's concurrency version.
+            Bot.objects.filter(id=bot.id).update(owner_user_id=owner_user_id)
+            bot.owner_user_id = owner_user_id
 
         # A deduplicated bot is the one already covering this meeting. It was launched by its
         # original request, so launching it again would make it join the meeting twice.
