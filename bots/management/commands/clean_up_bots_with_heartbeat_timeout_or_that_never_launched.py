@@ -8,7 +8,7 @@ from django.db import models
 from django.utils import timezone
 from kubernetes import client, config
 
-from bots.models import Bot, BotEventManager, BotEventSubTypes, BotEventTypes
+from bots.models import Bot, BotEventManager, BotEventSubTypes, BotEventTypes, SessionTypes
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +143,9 @@ class Command(BaseCommand):
             # - created between 7 days and 1 hour ago AND join_at is null OR join_at is between 7 days and 1 hour ago
             # - first heartbeat is null (never launched)
             never_launched_q_filter = models.Q(created_at__gt=seven_days_ago, created_at__lt=one_hour_ago, first_heartbeat_timestamp__isnull=True, join_at__isnull=True) | models.Q(join_at__gt=seven_days_ago, join_at__lt=one_hour_ago, first_heartbeat_timestamp__isnull=True)
-            problem_bots = Bot.objects.filter(~BotEventManager.get_post_meeting_states_q_filter() & never_launched_q_filter)
+            # Local recordings launch no pod by design, so they never send a heartbeat and
+            # would otherwise all be reaped as "never launched" an hour after they start.
+            problem_bots = Bot.objects.filter(~BotEventManager.get_post_meeting_states_q_filter() & never_launched_q_filter).exclude(session_type=SessionTypes.LOCAL)
 
             logger.info(f"Found {problem_bots.count()} bots that never launched")
 
