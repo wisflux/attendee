@@ -686,6 +686,7 @@ class RecordingViews(models.TextChoices):
 class SessionTypes(models.IntegerChoices):
     BOT = 1, "Bot"
     APP_SESSION = 2, "App Session"
+    LOCAL = 3, "Local Recording"  # desktop local recording (mic + system audio uploaded as chunks)
 
 
 class TranscriptionSettings:
@@ -1191,6 +1192,8 @@ class Bot(models.Model):
     def object_id_prefix(self):
         if self.session_type == SessionTypes.BOT:
             return "bot_"
+        elif self.session_type == SessionTypes.LOCAL:
+            return "local_"
         else:
             return "app_"
 
@@ -1355,6 +1358,9 @@ class BotEventTypes(models.IntegerChoices):
     APP_SESSION_DISCONNECT_REQUESTED = 102, "App Session Disconnect Requested"
     APP_SESSION_DISCONNECTED = 103, "App Session Disconnected"
 
+    # Local recording events
+    LOCAL_SESSION_ENDED = 104, "Local Session Ended"
+
     @classmethod
     def type_to_api_code(cls, value):
         """Returns the API code for a given type value"""
@@ -1382,6 +1388,7 @@ class BotEventTypes(models.IntegerChoices):
             cls.APP_SESSION_CONNECTED: "app_session_connected",
             cls.APP_SESSION_DISCONNECT_REQUESTED: "app_session_disconnect_requested",
             cls.APP_SESSION_DISCONNECTED: "app_session_disconnected",
+            cls.LOCAL_SESSION_ENDED: "local_session_ended",
         }
         return mapping.get(value)
 
@@ -1719,6 +1726,13 @@ class BotEventManager:
             "from": BotStates.DISCONNECTING,
             "to": BotStates.POST_PROCESSING,
         },
+        # Local recording: no pod/meeting, so stop ends the session directly. The recording
+        # must already be COMPLETE before this fires (finalize does that), otherwise the
+        # post-meeting transition would terminate the still-in-progress recording as FAILED.
+        BotEventTypes.LOCAL_SESSION_ENDED: {
+            "from": BotStates.READY,
+            "to": BotStates.ENDED,
+        },
     }
 
     @classmethod
@@ -2029,19 +2043,22 @@ class BotEventManager:
                         metadata=event_metadata,
                     )
 
-                    # Trigger webhook for this event
-                    trigger_webhook(
-                        webhook_trigger_type=WebhookTriggerTypes.BOT_STATE_CHANGE,
-                        bot=bot,
-                        payload={
-                            "event_type": BotEventTypes.type_to_api_code(event_type),
-                            "event_sub_type": BotEventSubTypes.sub_type_to_api_code(event_sub_type),
-                            "event_metadata": event_metadata,
-                            "old_state": BotStates.state_to_api_code(old_state),
-                            "new_state": BotStates.state_to_api_code(bot.state),
-                            "created_at": event.created_at.isoformat(),
-                        },
-                    )
+                    # Trigger webhook for this event. Local recordings have no external
+                    # subscribers and would otherwise deliver "bot" state-change webhooks to
+                    # meeting-bot customers sharing the project, so they are skipped.
+                    if bot.session_type != SessionTypes.LOCAL:
+                        trigger_webhook(
+                            webhook_trigger_type=WebhookTriggerTypes.BOT_STATE_CHANGE,
+                            bot=bot,
+                            payload={
+                                "event_type": BotEventTypes.type_to_api_code(event_type),
+                                "event_sub_type": BotEventSubTypes.sub_type_to_api_code(event_sub_type),
+                                "event_metadata": event_metadata,
+                                "old_state": BotStates.state_to_api_code(old_state),
+                                "new_state": BotStates.state_to_api_code(bot.state),
+                                "created_at": event.created_at.isoformat(),
+                            },
+                        )
 
                     # If we are configured to log bot state changes, log it
                     if settings.LOG_BOT_STATE_CHANGES:
