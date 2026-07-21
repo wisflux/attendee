@@ -225,6 +225,9 @@ REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_THROTTLE_RATES": {
         "project_post": os.getenv("PROJECT_POST_THROTTLE_RATE", "3000/min"),
+        # Per-member read budget. Generous enough that opening history or polling a transcript
+        # never trips it, low enough to stop a runaway client hammering the database.
+        "member_read": os.getenv("MEMBER_READ_THROTTLE_RATE", "600/min"),
     },
 }
 
