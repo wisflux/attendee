@@ -49,3 +49,16 @@ def decode_user_id(request):
         raise exceptions.AuthenticationFailed("User token missing a user id")
 
     return str(user_id)
+
+
+def optional_user_id(request):
+    """Same as decode_user_id, but returns None when no token was sent at all.
+
+    For endpoints that predate per-user ownership (bot dispatch): API customers who send no
+    token keep working exactly as before and their bots stay unowned. A token that IS sent
+    must still be valid -- silently ignoring a bad one would hand the caller an unowned bot
+    that never appears in their history, which looks like data loss.
+    """
+    if not request.META.get(USER_TOKEN_HEADER):
+        return None
+    return decode_user_id(request)

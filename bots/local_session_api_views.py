@@ -199,22 +199,6 @@ class LocalSessionAudioView(APIView):
         return Response(status=status.HTTP_202_ACCEPTED)
 
 
-class LocalSessionHeartbeatView(APIView):
-    authentication_classes = [ApiKeyAuthentication]
-    throttle_classes = [ProjectPostThrottle]
-
-    def post(self, request, object_id):
-        owner_user_id = decode_user_id(request)
-        bot = find_local_session(request, object_id, owner_user_id)
-        if bot is None:
-            return Response({"error": "Local session not found"}, status=status.HTTP_404_NOT_FOUND)
-
-        # Pause stops audio uploads, so without this ping the idle reaper could not tell a
-        # paused session from a crashed one. The desktop pings while open but not uploading.
-        mark_session_alive(bot.id)
-        return Response(status=status.HTTP_200_OK)
-
-
 class LocalSessionStopView(APIView):
     authentication_classes = [ApiKeyAuthentication]
     throttle_classes = [ProjectPostThrottle]
