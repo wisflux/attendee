@@ -84,6 +84,9 @@ def deliver_webhook(self, delivery_id):
         elif delivery.bot.session_type == SessionTypes.APP_SESSION:
             related_object_specific_webhook_data["app_session_id"] = delivery.bot.object_id
             related_object_specific_webhook_data["app_session_metadata"] = delivery.bot.metadata
+        elif delivery.bot.session_type == SessionTypes.LOCAL:
+            related_object_specific_webhook_data["local_session_id"] = delivery.bot.object_id
+            related_object_specific_webhook_data["local_session_metadata"] = delivery.bot.metadata
     elif delivery.calendar:
         related_object_specific_webhook_data["calendar_id"] = delivery.calendar.object_id
         related_object_specific_webhook_data["calendar_deduplication_key"] = delivery.calendar.deduplication_key

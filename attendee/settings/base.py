@@ -50,6 +50,11 @@ INSTALLED_APPS = [
 
 CREDENTIALS_ENCRYPTION_KEY = os.getenv("CREDENTIALS_ENCRYPTION_KEY")
 
+# Shared HS256 secret that team.day signs its member JWTs with (the desktop sends that token
+# as X-User-Token on local-session calls so a session can be tied to, and only read by, its
+# owner). Unset -> owner-scoped endpoints fail closed. Must equal the auth-server's JWT_SECRET.
+TEAM_DAY_JWT_SECRET = os.getenv("TEAM_DAY_JWT_SECRET")
+
 AUTH_USER_MODEL = "accounts.User"
 
 AUTHENTICATION_BACKENDS = [
@@ -220,6 +225,9 @@ REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_THROTTLE_RATES": {
         "project_post": os.getenv("PROJECT_POST_THROTTLE_RATE", "3000/min"),
+        # Per-member read budget. Generous enough that opening history or polling a transcript
+        # never trips it, low enough to stop a runaway client hammering the database.
+        "member_read": os.getenv("MEMBER_READ_THROTTLE_RATE", "600/min"),
     },
 }
 
