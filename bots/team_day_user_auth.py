@@ -51,6 +51,19 @@ def decode_user_id(request):
     return str(user_id)
 
 
+def quiet_user_id(request):
+    """The member id if one can be established, else None -- never raises.
+
+    For throttling, which runs before the view's auth and must not turn a bad token into an
+    error of its own. An unattributable request simply goes unthrottled here; the view still
+    rejects it.
+    """
+    try:
+        return optional_user_id(request)
+    except Exception:
+        return None
+
+
 def optional_user_id(request):
     """Same as decode_user_id, but returns None when no token was sent at all.
 
