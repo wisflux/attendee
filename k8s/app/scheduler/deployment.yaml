@@ -20,7 +20,7 @@ spec:
         - name: regcred
       containers:
         - name: scheduler
-          image: wisfluxp/attendee:69730a9d
+          image: wisfluxp/attendee:0de5b456
           command: ["python", "manage.py", "run_scheduler"]
           envFrom:
             - configMapRef:
