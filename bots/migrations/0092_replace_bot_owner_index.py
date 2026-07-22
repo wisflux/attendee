@@ -18,7 +18,7 @@ class Migration(migrations.Migration):
     atomic = False
 
     dependencies = [
-        ('bots', '0090_bot_owner_user_id'),
+        ('bots', '0091_bot_owner_user_id'),
     ]
 
     operations = [

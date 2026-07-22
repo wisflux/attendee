@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('bots', '0087_bot_meeting_dedup_key_and_more'),
+        ('bots', '0088_alter_botchatmessagerequest_to'),
     ]
 
     operations = [

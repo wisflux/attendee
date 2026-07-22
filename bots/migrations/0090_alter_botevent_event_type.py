@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('bots', '0088_alter_bot_session_type'),
+        ('bots', '0089_alter_bot_session_type'),
     ]
 
     operations = [

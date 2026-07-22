@@ -12,7 +12,7 @@ class Migration(migrations.Migration):
     atomic = False
 
     dependencies = [
-        ('bots', '0089_alter_botevent_event_type'),
+        ('bots', '0090_alter_botevent_event_type'),
     ]
 
     operations = [
