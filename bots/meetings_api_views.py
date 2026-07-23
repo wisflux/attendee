@@ -24,14 +24,13 @@ from .authentication import ApiKeyAuthentication
 from .bots_api_utils import delete_bot
 from .bots_api_views import TranscriptView
 from .local_session_store import clear_session_state
+from .meetings_filters import FilterError, apply_meeting_filters
 from .meetings_serializers import MeetingSerializer
 from .models import Bot, BotStates, SessionTypes
 from .team_day_user_auth import decode_user_id
 from .throttling import MemberReadThrottle
 
 logger = logging.getLogger(__name__)
-
-SOURCE_TO_SESSION_TYPE = {"bot": SessionTypes.BOT, "local": SessionTypes.LOCAL}
 
 
 class MeetingCursorPagination(CursorPagination):
@@ -87,15 +86,13 @@ class MeetingListView(APIView):
         owner_user_id = decode_user_id(request)
         queryset = owned_meetings(request, owner_user_id)
 
-        source = request.query_params.get("source")
-        if source:
-            session_type = SOURCE_TO_SESSION_TYPE.get(source)
-            if session_type is None:
-                return Response(
-                    {"error": f"source must be one of {sorted(SOURCE_TO_SESSION_TYPE)}"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            queryset = queryset.filter(session_type=session_type)
+        # Filters narrow a queryset that is already scoped to this member, so none of them can
+        # widen it to somebody else's meetings -- see meetings_filters for why that ordering is
+        # the safety property rather than a style choice.
+        try:
+            queryset = apply_meeting_filters(queryset, request.query_params)
+        except FilterError as bad_parameter:
+            return Response({"error": str(bad_parameter)}, status=status.HTTP_400_BAD_REQUEST)
 
         paginator = MeetingCursorPagination()
         page = paginator.paginate_queryset(queryset, request, view=self)
