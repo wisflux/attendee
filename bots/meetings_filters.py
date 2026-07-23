@@ -23,6 +23,11 @@ from .models import SessionTypes
 
 SOURCE_TO_SESSION_TYPE = {"bot": SessionTypes.BOT, "local": SessionTypes.LOCAL}
 
+# Longer than the columns being searched (name is 255, and a link that long matches nothing),
+# so the cap can only reject terms that could never have found anything -- while keeping a
+# caller from handing the database a megabyte-long LIKE pattern.
+MAX_SEARCH_LENGTH = 2048
+
 
 class FilterError(ValueError):
     """A query parameter the caller got wrong. The message is safe to return verbatim."""
@@ -72,6 +77,14 @@ def apply_search(queryset, term):
     term = (term or "").strip()
     if not term:
         return queryset
+    # A NUL survives Django's query parsing but Postgres refuses to accept it in a string
+    # literal, so passing one through raises ValueError deep in the driver -- a 500 for what is
+    # plainly a bad request. Rejected here rather than stripped: silently searching for
+    # something other than what was asked for is how a filter comes to return everything.
+    if "\x00" in term:
+        raise FilterError("q must not contain null bytes")
+    if len(term) > MAX_SEARCH_LENGTH:
+        raise FilterError(f"q must be at most {MAX_SEARCH_LENGTH} characters")
     return queryset.filter(Q(name__icontains=term) | Q(meeting_url__icontains=term))
 
 

@@ -70,6 +70,24 @@ class TestMeetingSearch(MeetingsApiTestBase):
 
         self.assertEqual(self.ids_in(self.search("Café")), [meeting.object_id])
 
+    def test_a_null_byte_is_refused_rather_than_crashing(self):
+        # A NUL survives Django's query parsing, but Postgres refuses it in a string literal,
+        # so an unguarded term raises ValueError inside the driver -- a 500 for a bad request.
+        self.make_meeting(name="Monday standup")
+
+        response = self.search("stand\x00up")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("null bytes", response.json()["error"])
+
+    def test_an_absurdly_long_term_is_refused(self):
+        # Longer than any column being searched, so it could never have matched -- but without
+        # a cap it still hands the database a megabyte-long LIKE pattern to evaluate.
+        response = self.search("x" * 5000)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("at most", response.json()["error"])
+
     def test_search_cannot_reach_another_members_meeting(self):
         # The whole point: a filter narrows a set that is already mine, so however specific the
         # term, it can never widen the answer to somebody else's row.
