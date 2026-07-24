@@ -310,9 +310,15 @@ class BotListCreateView(GenericAPIView):
             return Response(error, status=status.HTTP_400_BAD_REQUEST)
 
         if owner_user_id:
-            # Single UPDATE: never a read-modify-write on the row's concurrency version.
-            Bot.objects.filter(id=bot.id).update(owner_user_id=owner_user_id)
-            bot.owner_user_id = owner_user_id
+            # Claim ownership only when the bot has none yet. The IS NULL guard makes one atomic
+            # UPDATE do two jobs: it fills an empty owner (so a bot dispatched before ownership
+            # existed, or while signed out, becomes claimable on a later dedup instead of staying
+            # invisible forever) AND matches zero rows on an already-owned bot (so a second member
+            # dispatching into someone's live meeting cannot take it over). Never a
+            # read-modify-write on the row's concurrency version.
+            claimed = Bot.objects.filter(id=bot.id, owner_user_id__isnull=True).update(owner_user_id=owner_user_id)
+            if claimed:
+                bot.owner_user_id = owner_user_id
 
         # A deduplicated bot is the one already covering this meeting. It was launched by its
         # original request, so launching it again would make it join the meeting twice.
