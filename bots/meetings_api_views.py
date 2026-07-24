@@ -24,6 +24,7 @@ from .authentication import ApiKeyAuthentication
 from .bots_api_utils import delete_bot
 from .bots_api_views import TranscriptView
 from .local_session_store import clear_session_state
+from .meeting_viewers import remove_viewer
 from .meetings_filters import FilterError, apply_meeting_filters
 from .meetings_serializers import MeetingSerializer
 from .models import Bot, BotStates, SessionTypes
@@ -116,18 +117,33 @@ class MeetingDetailView(APIView):
         return Response(MeetingSerializer(bot).data, status=status.HTTP_200_OK)
 
     def delete(self, request, object_id):
+        """Reference-counted delete: everyone in the viewer list is equal.
+
+        Deleting removes *my* copy. While anyone else still holds the meeting the recording is
+        untouched -- only when the list empties is the data actually wiped. So a shared meeting
+        survives until its last viewer leaves, and a meeting I alone hold is wiped the moment I
+        delete it. owner_user_id (billing) is never consulted here; leaving is not a privilege.
+        """
         owner_user_id = decode_user_id(request)
         bot = find_owned_meeting(request, object_id, owner_user_id)
         if bot is None:
             return Response({"error": "Meeting not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        # Already deleted: say so calmly. A double-click, a retry after a lost response, or a
-        # second device acting on a stale list would otherwise raise out of delete_data().
-        if bot.state == BotStates.DATA_DELETED:
+        # Others still hold it: just drop my copy. Never touches the recording or its lifecycle,
+        # so leaving a meeting that is still being recorded is fine -- the creator keeps it.
+        if any(viewer_id != owner_user_id for viewer_id in bot.viewer_user_ids):
+            remove_viewer(bot.id, owner_user_id)
             return Response(status=status.HTTP_204_NO_CONTENT)
 
-        # A meeting that hasn't run yet is CANCELLED, not deleted -- a different operation that
-        # removes the row outright rather than wiping the contents of something that happened.
+        # I am the last viewer, so leaving means the data goes with me. The meeting's lifecycle
+        # now decides how.
+        # Already wiped: idempotent. A double-click or a stale second device just drops my id.
+        if bot.state == BotStates.DATA_DELETED:
+            remove_viewer(bot.id, owner_user_id)
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        # Hasn't run yet: CANCELLED, which removes the row outright (delete_bot), so there is no
+        # viewer list left to prune.
         if bot.state == BotStates.SCHEDULED:
             cancelled, error = delete_bot(bot)
             if not cancelled:
@@ -135,14 +151,16 @@ class MeetingDetailView(APIView):
             logger.info(f"Cancelled scheduled meeting {object_id}")
             return Response(status=status.HTTP_204_NO_CONTENT)
 
-        # Anything still running cannot be deleted: delete_data() only accepts a finished
-        # meeting, and letting it raise would surface as a 500 instead of something actionable.
+        # Still running and I am the last viewer: wiping would orphan a live recording, and
+        # delete_data() only accepts a finished meeting. Refuse, and keep me in the list -- a
+        # meeting cannot be left with no viewers while it is still being captured.
         if bot.state not in BotStates.post_meeting_states():
             return Response(
                 {"error": "This meeting is still in progress. Stop it before deleting."},
                 status=status.HTTP_409_CONFLICT,
             )
 
+        remove_viewer(bot.id, owner_user_id)
         bot.delete_data()
         if bot.session_type == SessionTypes.LOCAL:
             # Drop any queued audio/tail/lock so a deleted session leaves nothing behind.
