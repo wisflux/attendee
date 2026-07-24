@@ -55,7 +55,10 @@ def owned_meetings(request, owner_user_id):
     pending = Q(recordings__utterances__transcription__isnull=True, recordings__utterances__failure_data__isnull=True)
     failed = Q(recordings__utterances__failure_data__isnull=False)
     return (
-        Bot.objects.filter(project=request.auth.project, owner_user_id=owner_user_id)
+        # Membership is "is my id in the viewer list", not "am I the owner": a meeting shared to
+        # me (my id appended on dedup) is as much mine to read as one I created. owner_user_id
+        # still records the creator, but it no longer gates visibility.
+        Bot.objects.filter(project=request.auth.project, viewer_user_ids__contains=[owner_user_id])
         # Deleted meetings keep their row (delete_data wipes contents but marks the row), so
         # they must be excluded or they resurface as blank entries.
         .exclude(state=BotStates.DATA_DELETED)
@@ -70,11 +73,13 @@ def owned_meetings(request, owner_user_id):
 
 
 def find_owned_meeting(request, object_id, owner_user_id):
-    """One meeting, or None. Deleted meetings are still addressable so delete stays idempotent."""
+    """One meeting I may see, or None. Membership is viewer containment, matching the list view,
+    so a meeting shared to me is reachable and a deleted one stays addressable (delete stays
+    idempotent). The name is kept for continuity; "owned" here means "visible to me"."""
     return Bot.objects.filter(
         object_id=object_id,
         project=request.auth.project,
-        owner_user_id=owner_user_id,
+        viewer_user_ids__contains=[owner_user_id],
     ).first()
 
 

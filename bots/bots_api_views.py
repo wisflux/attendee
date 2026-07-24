@@ -21,6 +21,7 @@ from .authentication import ApiKeyAuthentication
 from .bots_api_utils import BotCreationSource, create_bot, create_bot_chat_message_request, create_bot_media_request_for_image, delete_bot, patch_bot, patch_bot_transcription_settings, patch_bot_voice_agent_settings, resolve_meeting_lineage, retry_failed_transcription, send_sync_command
 from .launch_bot_utils import launch_adhoc_bot_from_view
 from .meeting_url_utils import meeting_type_from_url
+from .meeting_viewers import add_viewer
 from .models import (
     AsyncTranscription,
     AsyncTranscriptionStates,
@@ -319,6 +320,11 @@ class BotListCreateView(GenericAPIView):
             claimed = Bot.objects.filter(id=bot.id, owner_user_id__isnull=True).update(owner_user_id=owner_user_id)
             if claimed:
                 bot.owner_user_id = owner_user_id
+            # Add the caller as a viewer on BOTH paths -- creator and dedup alike. Ownership has a
+            # single winner (billing), but visibility does not: everyone who dispatches into a
+            # meeting may read it. This is the share: a second member deduped into a live meeting
+            # gets it in their history without touching who owns it.
+            add_viewer(bot.id, owner_user_id)
 
         # A deduplicated bot is the one already covering this meeting. It was launched by its
         # original request, so launching it again would make it join the meeting twice.
