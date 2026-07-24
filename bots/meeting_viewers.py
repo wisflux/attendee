@@ -28,3 +28,19 @@ def add_viewer(bot_id, user_id):
             output_field=ArrayField(CharField(max_length=255)),
         )
     )
+
+
+def remove_viewer(bot_id, user_id):
+    """Drop ``user_id`` from the meeting's viewer list. One statement, idempotent: ``array_remove``
+    strips every occurrence (the append guard keeps it to at most one), so removing an id that is
+    already gone is a harmless no-op."""
+    if not user_id:
+        return
+    Bot.objects.filter(id=bot_id).update(
+        viewer_user_ids=Func(
+            F("viewer_user_ids"),
+            Value(user_id),
+            function="array_remove",
+            output_field=ArrayField(CharField(max_length=255)),
+        )
+    )
