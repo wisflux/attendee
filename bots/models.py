@@ -11,6 +11,8 @@ from concurrency.exceptions import RecordModifiedError
 from concurrency.fields import IntegerVersionField
 from cryptography.fernet import Fernet, InvalidToken
 from django.conf import settings
+from django.contrib.postgres.fields import ArrayField
+from django.contrib.postgres.indexes import GinIndex
 from django.core.exceptions import ValidationError
 from django.core.files.storage import Storage, storages
 from django.db import models, transaction
@@ -879,6 +881,13 @@ class Bot(models.Model):
     # from client input). Stored as a string to match how the desktop already stringifies the
     # id. NULL for bots created before this feature and for any dispatch without a user token.
     owner_user_id = models.CharField(max_length=255, null=True, blank=True, editable=False)
+    # Everyone allowed to SEE this meeting, reference-counted. owner_user_id above records who
+    # CREATED it (for billing/attribution) and never changes; this list records who may read it
+    # and shrinks as people remove their copy. The creator is a viewer too, so deletion is
+    # uniform: a member removes their own id, and when the list empties the data is wiped. A
+    # shared meeting is one whose viewer list holds more than its creator. Backfilled from
+    # owner_user_id, so an existing meeting starts with its owner as its sole viewer.
+    viewer_user_ids = ArrayField(models.CharField(max_length=255), default=list, blank=True, editable=False)
 
     def delete_data(self):
         # Check if bot is in a state where the data deleted event can be created
@@ -1244,6 +1253,10 @@ class Bot(models.Model):
                 name="bot_owner_history_idx",
                 condition=models.Q(owner_user_id__isnull=False),
             ),
+            # History is filtered by "is my id in viewer_user_ids" (an array containment test),
+            # which a btree cannot serve -- GIN is the index built for @> containment, so a
+            # member's history stays fast as the table grows.
+            GinIndex(fields=["viewer_user_ids"], name="bot_viewers_gin"),
         ]
 
         # Within a project, we don't want to allow bots that aren't in apost-meeting state with the same deduplication key.
