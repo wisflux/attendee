@@ -1270,6 +1270,50 @@ class Bot(models.Model):
         ]
 
 
+class MeetingShareToken(models.Model):
+    """A one-link capability to join a meeting's viewer list.
+
+    Sharing is by *possession of a secret*, not by naming a user: attendee has no directory of
+    team.day members to pick from, so the only identity available is the one the redeemer proves
+    with their own JWT when they redeem. The token is therefore an unguessable capability -- who
+    holds it may claim a view of the meeting, nothing more.
+
+    Only the SHA-256 hash is stored, exactly as ApiKey does: the raw token is shown once at
+    creation and is unrecoverable afterwards, so a database read cannot hand out live share links.
+    Redemption looks up by hash, honours expiry, and (in the view) confirms the redeemer's project
+    matches the meeting's, so a link can never cross an organisation boundary.
+    """
+
+    DEFAULT_TTL = timedelta(days=7)
+
+    bot = models.ForeignKey("Bot", on_delete=models.CASCADE, related_name="share_tokens")
+    token_hash = models.CharField(max_length=64, unique=True)  # SHA-256 hex is 64 chars
+    created_by = models.CharField(max_length=255)  # the team.day user id who made the link
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+
+    @staticmethod
+    def hash_token(raw_token):
+        return hashlib.sha256(raw_token.encode()).hexdigest()
+
+    @classmethod
+    def create(cls, bot, created_by, ttl=None):
+        """Mint a token for a meeting. Returns (instance, raw_token); the raw token is the only
+        time it is ever available in the clear."""
+        raw_token = secrets.token_urlsafe(32)  # 256 bits of entropy -- not brute-forceable
+        instance = cls.objects.create(
+            bot=bot,
+            token_hash=cls.hash_token(raw_token),
+            created_by=created_by,
+            expires_at=timezone.now() + (ttl or cls.DEFAULT_TTL),
+        )
+        return instance, raw_token
+
+    @property
+    def is_expired(self):
+        return timezone.now() >= self.expires_at
+
+
 class CreditTransaction(models.Model):
     organization = models.ForeignKey(Organization, on_delete=models.PROTECT, null=False, related_name="credit_transactions")
     created_at = models.DateTimeField(auto_now_add=True)
