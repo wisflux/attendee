@@ -15,6 +15,13 @@ urlpatterns = [
         meetings_api_views.MeetingListView.as_view(),
         name="meeting-list",
     ),
+    # Must precede "meetings/<object_id>": otherwise "redeem" is captured as an object_id and the
+    # POST falls through to the detail view (which has no post handler) as a 405.
+    path(
+        "meetings/redeem",
+        meetings_api_views.MeetingRedeemView.as_view(),
+        name="meeting-redeem",
+    ),
     # GET returns the meeting + status; DELETE removes it (cancelling it if it hasn't run yet).
     path(
         "meetings/<str:object_id>",
@@ -25,5 +32,10 @@ urlpatterns = [
         "meetings/<str:object_id>/transcript",
         meetings_api_views.MeetingTranscriptView.as_view(),
         name="meeting-transcript",
+    ),
+    path(
+        "meetings/<str:object_id>/share",
+        meetings_api_views.MeetingShareView.as_view(),
+        name="meeting-share",
     ),
 ]

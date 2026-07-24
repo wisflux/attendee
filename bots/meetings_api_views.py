@@ -24,12 +24,12 @@ from .authentication import ApiKeyAuthentication
 from .bots_api_utils import delete_bot
 from .bots_api_views import TranscriptView
 from .local_session_store import clear_session_state
-from .meeting_viewers import remove_viewer
+from .meeting_viewers import add_viewer, remove_viewer
 from .meetings_filters import FilterError, apply_meeting_filters
 from .meetings_serializers import MeetingSerializer
-from .models import Bot, BotStates, SessionTypes
+from .models import Bot, BotStates, MeetingShareToken, SessionTypes
 from .team_day_user_auth import decode_user_id
-from .throttling import MemberReadThrottle
+from .throttling import MemberReadThrottle, ProjectPostThrottle
 
 logger = logging.getLogger(__name__)
 
@@ -184,3 +184,68 @@ class MeetingTranscriptView(TranscriptView):
         if find_owned_meeting(request, object_id, owner_user_id) is None:
             return Response({"error": "Meeting not found"}, status=status.HTTP_404_NOT_FOUND)
         return super().get(request, object_id)
+
+
+class MeetingShareView(APIView):
+    """Mint a share link for a meeting I can see.
+
+    Only a viewer may create one -- the same 404-not-403 gate as everywhere else, so the endpoint
+    never confirms a meeting I cannot see exists. The raw token is returned exactly once; only its
+    hash is stored.
+    """
+
+    authentication_classes = [ApiKeyAuthentication]
+    throttle_classes = [ProjectPostThrottle]
+
+    def post(self, request, object_id):
+        owner_user_id = decode_user_id(request)
+        bot = find_owned_meeting(request, object_id, owner_user_id)
+        # A wiped meeting has nothing to share; treat it as gone so no dead link is minted.
+        if bot is None or bot.state == BotStates.DATA_DELETED:
+            return Response({"error": "Meeting not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        _, raw_token = MeetingShareToken.create(bot, created_by=owner_user_id)
+        return Response({"token": raw_token}, status=status.HTTP_201_CREATED)
+
+
+class MeetingRedeemView(APIView):
+    """Redeem a share link: add the caller to the meeting's viewer list.
+
+    Security rests on three checks, all fail-closed: the token must hash to a live, unexpired
+    record; the meeting's project must match the caller's (so a link cannot cross an organisation);
+    and the caller is identified by their own verified JWT, never by anything in the link. An
+    unknown or cross-project token is a generic 404 -- it never reveals that a meeting exists.
+    """
+
+    authentication_classes = [ApiKeyAuthentication]
+    throttle_classes = [ProjectPostThrottle]
+
+    def post(self, request):
+        owner_user_id = decode_user_id(request)
+
+        # Coerce defensively: a JSON body can carry token as an object or a number, and calling
+        # .strip() on that would be a 500 for what is plainly a bad request.
+        raw_token = request.data.get("token")
+        raw_token = raw_token.strip() if isinstance(raw_token, str) else ""
+        if not raw_token:
+            return Response({"error": "token is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        share = (
+            MeetingShareToken.objects.select_related("bot")
+            .filter(token_hash=MeetingShareToken.hash_token(raw_token))
+            .first()
+        )
+        # A bad token, a link for another project, or a wiped meeting are all indistinguishable
+        # from "no such link" on purpose -- redemption must not confirm anything the caller was
+        # not already handed.
+        if (
+            share is None
+            or share.bot.project_id != request.auth.project_id
+            or share.bot.state == BotStates.DATA_DELETED
+        ):
+            return Response({"error": "This share link is not valid."}, status=status.HTTP_404_NOT_FOUND)
+        if share.is_expired:
+            return Response({"error": "This share link has expired."}, status=status.HTTP_410_GONE)
+
+        add_viewer(share.bot.id, owner_user_id)
+        return Response(MeetingSerializer(share.bot).data, status=status.HTTP_200_OK)
