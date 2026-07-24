@@ -96,6 +96,10 @@ class LocalSessionCreateView(APIView):
                 name=LOCAL_SESSION_NAME,
                 session_type=SessionTypes.LOCAL,
                 owner_user_id=owner_user_id,
+                # The creator is the first viewer, set inline because a local session is never
+                # deduplicated -- decode_user_id guarantees a real owner here, so there is no
+                # unowned case to guard.
+                viewer_user_ids=[owner_user_id],
             )
 
             recording = Recording.objects.create(

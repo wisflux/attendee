@@ -62,7 +62,14 @@ class MeetingsApiTestBase(TestCase):
         created_at=None,
         project=None,
         with_recording=True,
+        viewer_user_ids=None,
     ):
+        # A real meeting's owner is always its first viewer (dispatch appends the creator; the
+        # 0093 backfill seeds existing ones). Mirror that here so ``owner_user_id=X`` produces a
+        # meeting X can actually see, without every test having to spell out the list. Pass
+        # viewer_user_ids explicitly to model a shared meeting or a hand-built edge case.
+        if viewer_user_ids is None:
+            viewer_user_ids = [owner_user_id] if owner_user_id else []
         bot = Bot.objects.create(
             project=project or self.project,
             meeting_url=meeting_url,
@@ -70,6 +77,7 @@ class MeetingsApiTestBase(TestCase):
             state=state,
             session_type=session_type,
             owner_user_id=owner_user_id,
+            viewer_user_ids=viewer_user_ids,
         )
         if created_at is not None:
             # created_at is auto_now_add, so it can only be set by writing past the model.
