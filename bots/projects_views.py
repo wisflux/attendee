@@ -21,6 +21,7 @@ from accounts.models import User, UserRole
 from .bots_api_utils import BotCreationSource, create_bot, create_webhook_subscription
 from .launch_bot_utils import launch_adhoc_bot_from_view
 from .models import (
+    DEFAULT_AZURE_OPENAI_API_VERSION,
     ApiKey,
     Bot,
     BotEvent,
@@ -185,6 +186,8 @@ def get_partial_for_credential_type(credential_type, request, context):
         return render(request, "projects/partials/kyutai_credentials.html", context)
     elif credential_type == Credentials.CredentialTypes.EXTERNAL_MEDIA_STORAGE:
         return render(request, "projects/partials/external_media_storage_credentials.html", context)
+    elif credential_type == Credentials.CredentialTypes.AZURE_OPENAI:
+        return render(request, "projects/partials/azure_openai_credentials.html", context)
     else:
         return HttpResponse("Cannot render the partial for this credential type", status=400)
 
@@ -393,6 +396,16 @@ class CreateCredentialsView(LoginRequiredMixin, ProjectUrlContextMixin, View):
 
                 if not credentials_data.get("access_key_id") or not credentials_data.get("access_key_secret") or (not credentials_data.get("endpoint_url") and not credentials_data.get("region_name")):
                     return HttpResponse("Missing required credentials data", status=400)
+            elif credential_type == Credentials.CredentialTypes.AZURE_OPENAI:
+                credentials_data = {
+                    "endpoint": request.POST.get("endpoint"),
+                    "deployment": request.POST.get("deployment"),
+                    "api_key": request.POST.get("api_key"),
+                    "api_version": request.POST.get("api_version") or DEFAULT_AZURE_OPENAI_API_VERSION,
+                }
+
+                if not credentials_data.get("endpoint") or not credentials_data.get("deployment") or not credentials_data.get("api_key"):
+                    return HttpResponse("Missing required credentials data", status=400)
             else:
                 return HttpResponse("Unsupported credential type", status=400)
 
@@ -468,6 +481,8 @@ class ProjectCredentialsView(LoginRequiredMixin, ProjectUrlContextMixin, View):
 
         external_media_storage_credentials = Credentials.objects.filter(project=project, credential_type=Credentials.CredentialTypes.EXTERNAL_MEDIA_STORAGE).first()
 
+        azure_openai_credentials = Credentials.objects.filter(project=project, credential_type=Credentials.CredentialTypes.AZURE_OPENAI).first()
+
         context = self.get_project_context(object_id, project)
         context.update(
             {
@@ -492,6 +507,8 @@ class ProjectCredentialsView(LoginRequiredMixin, ProjectUrlContextMixin, View):
                 "kyutai_credential_type": Credentials.CredentialTypes.KYUTAI,
                 "external_media_storage_credentials": external_media_storage_credentials.get_credentials() if external_media_storage_credentials else None,
                 "external_media_storage_credential_type": Credentials.CredentialTypes.EXTERNAL_MEDIA_STORAGE,
+                "azure_openai_credentials": azure_openai_credentials.get_credentials() if azure_openai_credentials else None,
+                "azure_openai_credential_type": Credentials.CredentialTypes.AZURE_OPENAI,
             }
         )
 
