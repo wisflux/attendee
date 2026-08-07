@@ -847,6 +847,16 @@ class TranscriptionSettings:
         return self._settings.get("meeting_closed_captions", {}).get("merge_consecutive_captions", False)
 
 
+class SummaryStates(models.TextChoices):
+    """Lifecycle of a meeting's AI title/summary generation (see docs/meeting-summaries)."""
+
+    PENDING = "pending", "Pending"  # not yet attempted
+    GENERATING = "generating", "Generating"  # claimed by a worker (atomic PENDING -> GENERATING)
+    DONE = "done", "Done"  # summary written; title applied to name
+    FAILED = "failed", "Failed"  # generation errored after retries; name/summary left untouched
+    SKIPPED = "skipped", "Skipped"  # nothing to summarize (empty/failed transcript, no credential)
+
+
 class Bot(models.Model):
     OBJECT_ID_PREFIX = "bot_"
 
@@ -888,6 +898,14 @@ class Bot(models.Model):
     # shared meeting is one whose viewer list holds more than its creator. Backfilled from
     # owner_user_id, so an existing meeting starts with its owner as its sole viewer.
     viewer_user_ids = ArrayField(models.CharField(max_length=255), default=list, blank=True, editable=False)
+
+    # AI title/summary of the meeting content (see docs/meeting-summaries). Global to the meeting:
+    # one summary shared by every viewer. `summary_state` tracks generation so the client can show
+    # progress; on success the title overwrites `name`. All null/PENDING here — a later phase fills
+    # them and will also clear them in delete_data when the transcript is wiped (not done yet).
+    summary = models.TextField(null=True, blank=True)
+    summary_state = models.CharField(max_length=20, choices=SummaryStates.choices, default=SummaryStates.PENDING)
+    summary_generated_at = models.DateTimeField(null=True, blank=True)
 
     def delete_data(self):
         # Check if bot is in a state where the data deleted event can be created
