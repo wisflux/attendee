@@ -2875,6 +2875,10 @@ class Utterance(models.Model):
         return self.recording.transcription_provider
 
 
+# Default Azure OpenAI REST API version applied when an AZURE_OPENAI credential omits one.
+DEFAULT_AZURE_OPENAI_API_VERSION = "2024-10-21"
+
+
 class Credentials(models.Model):
     class CredentialTypes(models.IntegerChoices):
         DEEPGRAM = 1, "Deepgram"
@@ -2888,6 +2892,7 @@ class Credentials(models.Model):
         EXTERNAL_MEDIA_STORAGE = 9, "External Media Storage"
         ELEVENLABS = 10, "ElevenLabs"
         KYUTAI = 11, "Kyutai"
+        AZURE_OPENAI = 12, "Azure OpenAI"
 
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="credentials")
     credential_type = models.IntegerField(choices=CredentialTypes.choices, null=False)
