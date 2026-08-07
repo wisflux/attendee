@@ -42,6 +42,8 @@ class MeetingSerializer(serializers.Serializer):
     created_at = serializers.DateTimeField()
     started_at = serializers.SerializerMethodField()
     ended_at = serializers.SerializerMethodField()
+    summary = serializers.CharField(allow_null=True)
+    summary_state = serializers.CharField()
 
     def get_source(self, bot):
         return SESSION_TYPE_TO_SOURCE.get(bot.session_type, "bot")
