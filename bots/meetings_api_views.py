@@ -248,9 +248,11 @@ class MeetingRedeemView(APIView):
 class MeetingSummarizeView(APIView):
     """Regenerate (or first-time generate) a meeting's AI title + summary on demand.
 
-    Powers the app's "Generate"/"Regenerate" button and covers meetings that predate the feature.
-    Only (re)starts from a settled state; while PENDING/GENERATING a run is already in flight, so the
-    call is a safe no-op that just returns the current state (closes the regenerate-vs-auto race).
+    Powers the app's "Generate"/"Regenerate" button and covers meetings that predate the feature
+    (which sit at PENDING and were never enqueued). Only a genuinely-running summary (a fresh
+    GENERATING claim) is a no-op; every other state -- terminal, a stale GENERATING, or a
+    never-started PENDING -- (re)starts. Duplicate enqueues are harmless: the task's atomic
+    PENDING->GENERATING claim lets exactly one worker run, so this never yields two summaries.
     """
 
     authentication_classes = [ApiKeyAuthentication]
@@ -263,23 +265,30 @@ class MeetingSummarizeView(APIView):
             return Response({"error": "Meeting not found"}, status=status.HTTP_404_NOT_FOUND)
         from bots.tasks.generate_meeting_summary_task import STALE_GENERATING_MINUTES, generate_meeting_summary
 
-        # No-op while a run is genuinely in flight; (re)start from any other state, including a
-        # GENERATING left stale by a crashed worker (recovery without a periodic reaper).
+        # No-op only while a run is genuinely in flight (a fresh GENERATING claim); (re)start from any
+        # other state -- terminal, a GENERATING left stale by a crashed worker, or a never-started
+        # PENDING (meetings that predate the feature). The task's atomic claim dedups any duplicate.
         if not _summary_run_in_flight(bot, STALE_GENERATING_MINUTES):
-            Bot.objects.filter(id=bot.id).update(summary_state=SummaryStates.PENDING, summary_error=None)
+            # Reset only from a settled/stale state. An already-PENDING meeting is left untouched so a
+            # worker that just claimed it (PENDING->GENERATING) is not clobbered back to PENDING --
+            # which would waste its in-flight Azure call. Its own claim guard already prevents a
+            # second summary, so here we simply make sure a task is queued.
+            if bot.summary_state != SummaryStates.PENDING:
+                Bot.objects.filter(id=bot.id).update(summary_state=SummaryStates.PENDING, summary_error=None)
             generate_meeting_summary.delay(bot.id)
             bot.refresh_from_db()
         return Response(MeetingSerializer(bot).data, status=status.HTTP_200_OK)
 
 
 def _summary_run_in_flight(bot, stale_minutes):
-    """True when a generation is genuinely still running, so a regenerate should be a safe no-op.
+    """True only when a worker is genuinely still running this summary (a fresh GENERATING claim),
+    so a user-pressed regenerate is a safe no-op.
 
-    Staleness reads summary_started_at (a summary-only lease), not the shared updated_at which any
-    unrelated bot.save() bumps.
+    PENDING is intentionally NOT in flight: it is either a meeting that predates the feature (never
+    enqueued) or one just queued. Either way the task's atomic PENDING->GENERATING claim dedups a
+    duplicate enqueue, so starting one is always safe. Staleness reads summary_started_at (a
+    summary-only lease), not the shared updated_at which any unrelated bot.save() bumps.
     """
-    if bot.summary_state == SummaryStates.PENDING:
-        return True
     if bot.summary_state == SummaryStates.GENERATING:
         fresh_after = timezone.now() - timedelta(minutes=stale_minutes)
         return bool(bot.summary_started_at and bot.summary_started_at > fresh_after)

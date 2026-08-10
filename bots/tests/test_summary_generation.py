@@ -233,6 +233,17 @@ class SummarizeEndpointTests(MeetingsApiTestBase):
         self.assertEqual(Bot.objects.get(id=bot.id).summary_state, SummaryStates.GENERATING)
 
     @patch(f"{TASK}.generate_meeting_summary.delay")
+    def test_generate_from_pending_enqueues_for_old_meetings(self, mock_delay):
+        # Meetings that predate the feature sit at PENDING and were never enqueued; a user-pressed
+        # Generate must start them. PENDING is left as-is (no clobber) and the task is queued.
+        bot = self.make_meeting(owner_user_id=MEMBER_A)
+        self.assertEqual(bot.summary_state, SummaryStates.PENDING)
+        response = self._post(bot.object_id, member_token(MEMBER_A))
+        self.assertEqual(response.status_code, 200)
+        mock_delay.assert_called_once_with(bot.id)
+        self.assertEqual(Bot.objects.get(id=bot.id).summary_state, SummaryStates.PENDING)
+
+    @patch(f"{TASK}.generate_meeting_summary.delay")
     def test_other_members_meeting_is_404(self, mock_delay):
         bot = self.make_meeting(owner_user_id=MEMBER_A)
         response = self._post(bot.object_id, member_token(MEMBER_B))
