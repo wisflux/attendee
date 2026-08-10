@@ -38,4 +38,9 @@ urlpatterns = [
         meetings_api_views.MeetingShareView.as_view(),
         name="meeting-share",
     ),
+    path(
+        "meetings/<str:object_id>/summarize",
+        meetings_api_views.MeetingSummarizeView.as_view(),
+        name="meeting-summarize",
+    ),
 ]

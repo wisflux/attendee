@@ -906,6 +906,13 @@ class Bot(models.Model):
     summary = models.TextField(null=True, blank=True)
     summary_state = models.CharField(max_length=20, choices=SummaryStates.choices, default=SummaryStates.PENDING)
     summary_generated_at = models.DateTimeField(null=True, blank=True)
+    # A short, safe reason shown to the member when a summary FAILED (e.g. no credential, bad key).
+    summary_error = models.TextField(null=True, blank=True)
+    # When the current attempt claimed this meeting. Doubles as the generation lease (reaper +
+    # regenerate staleness) and a write guard: a stale worker's late write is filtered on this exact
+    # value, so a delete or reaper that intervened voids it. NOT the shared updated_at (which any
+    # unrelated bot.save() bumps).
+    summary_started_at = models.DateTimeField(null=True, blank=True, editable=False)
 
     def delete_data(self):
         # Check if bot is in a state where the data deleted event can be created
@@ -935,6 +942,11 @@ class Bot(models.Model):
             # Delete all webhook delivery attempts that have a trigger other than BOT_STATE_CHANGE, since these contain sensitive data
             webhook_delivery_attempts_with_sensitive_data = self.webhook_delivery_attempts.exclude(webhook_trigger_type=WebhookTriggerTypes.BOT_STATE_CHANGE)
             webhook_delivery_attempts_with_sensitive_data.delete()
+
+            # The AI summary describes content we just wiped -> clear it so it never outlives the
+            # transcript (edge case #19). Moving off GENERATING also voids a racing generation's
+            # write (its terminal .update() is filtered on summary_started_at + GENERATING).
+            Bot.objects.filter(id=self.id).update(summary=None, summary_error=None, summary_generated_at=None, summary_started_at=None, summary_state=SummaryStates.PENDING)
 
             BotEventManager.create_event(bot=self, event_type=BotEventTypes.DATA_DELETED)
 
@@ -2613,6 +2625,16 @@ class RecordingManager:
 
         recording.transcription_state = RecordingTranscriptionStates.COMPLETE
         recording.save()
+
+        # Kick off AI title/summary generation for the finished default recording (bot + local).
+        # on_commit so the worker never sees an uncommitted/rolled-back transcription (this runs
+        # inside create_event's transaction on the bot path); lazy import avoids a models <-> tasks
+        # circular import; the task itself no-ops unless the meeting is still PENDING.
+        if recording.is_default_recording:
+            from bots.tasks.generate_meeting_summary_task import generate_meeting_summary
+
+            bot_id = recording.bot_id
+            transaction.on_commit(lambda: generate_meeting_summary.delay(bot_id))
 
     @classmethod
     def set_recording_transcription_failed(cls, recording: Recording, failure_data: dict):

@@ -1,5 +1,6 @@
 from .autopay_charge_task import autopay_charge
 from .deliver_webhook_task import deliver_webhook
+from .generate_meeting_summary_task import generate_meeting_summary, reap_stale_summary_generations
 from .launch_adhoc_bot_task import launch_adhoc_bot
 from .launch_scheduled_bot_task import launch_scheduled_bot
 from .process_async_transcription_task import process_async_transcription
@@ -29,4 +30,6 @@ __all__ = [
     "validate_zoom_oauth_connections",
     "send_slack_alert",
     "run_bot_in_ephemeral_container",
+    "generate_meeting_summary",
+    "reap_stale_summary_generations",
 ]
