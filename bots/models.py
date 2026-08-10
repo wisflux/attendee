@@ -2893,8 +2893,9 @@ class Utterance(models.Model):
         return self.recording.transcription_provider
 
 
-# Default Azure OpenAI REST API version applied when an AZURE_OPENAI credential omits one.
-DEFAULT_AZURE_OPENAI_API_VERSION = "2024-10-21"
+# Default Azure OpenAI REST API version applied when an AZURE_OPENAI credential omits one. The
+# summarizer uses the Responses API, which requires a 2025 preview version.
+DEFAULT_AZURE_OPENAI_API_VERSION = "2025-04-01-preview"
 
 
 class Credentials(models.Model):
