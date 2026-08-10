@@ -13,8 +13,10 @@ Two rules run through everything here:
 """
 
 import logging
+from datetime import timedelta
 
 from django.db.models import Count, Q
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.pagination import CursorPagination
 from rest_framework.response import Response
@@ -27,7 +29,7 @@ from .local_session_store import clear_session_state
 from .meeting_viewers import add_viewer, remove_viewer
 from .meetings_filters import FilterError, apply_meeting_filters
 from .meetings_serializers import MeetingSerializer
-from .models import Bot, BotStates, MeetingShareToken, SessionTypes
+from .models import Bot, BotStates, MeetingShareToken, SessionTypes, SummaryStates
 from .team_day_user_auth import decode_user_id
 from .throttling import MemberReadThrottle, ProjectPostThrottle
 
@@ -230,22 +232,55 @@ class MeetingRedeemView(APIView):
         if not raw_token:
             return Response({"error": "token is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        share = (
-            MeetingShareToken.objects.select_related("bot")
-            .filter(token_hash=MeetingShareToken.hash_token(raw_token))
-            .first()
-        )
+        share = MeetingShareToken.objects.select_related("bot").filter(token_hash=MeetingShareToken.hash_token(raw_token)).first()
         # A bad token, a link for another project, or a wiped meeting are all indistinguishable
         # from "no such link" on purpose -- redemption must not confirm anything the caller was
         # not already handed.
-        if (
-            share is None
-            or share.bot.project_id != request.auth.project_id
-            or share.bot.state == BotStates.DATA_DELETED
-        ):
+        if share is None or share.bot.project_id != request.auth.project_id or share.bot.state == BotStates.DATA_DELETED:
             return Response({"error": "This share link is not valid."}, status=status.HTTP_404_NOT_FOUND)
         if share.is_expired:
             return Response({"error": "This share link has expired."}, status=status.HTTP_410_GONE)
 
         add_viewer(share.bot.id, owner_user_id)
         return Response(MeetingSerializer(share.bot).data, status=status.HTTP_200_OK)
+
+
+class MeetingSummarizeView(APIView):
+    """Regenerate (or first-time generate) a meeting's AI title + summary on demand.
+
+    Powers the app's "Generate"/"Regenerate" button and covers meetings that predate the feature.
+    Only (re)starts from a settled state; while PENDING/GENERATING a run is already in flight, so the
+    call is a safe no-op that just returns the current state (closes the regenerate-vs-auto race).
+    """
+
+    authentication_classes = [ApiKeyAuthentication]
+    throttle_classes = [ProjectPostThrottle]
+
+    def post(self, request, object_id):
+        owner_user_id = decode_user_id(request)
+        bot = find_owned_meeting(request, object_id, owner_user_id)
+        if bot is None or bot.state == BotStates.DATA_DELETED:
+            return Response({"error": "Meeting not found"}, status=status.HTTP_404_NOT_FOUND)
+        from bots.tasks.generate_meeting_summary_task import STALE_GENERATING_MINUTES, generate_meeting_summary
+
+        # No-op while a run is genuinely in flight; (re)start from any other state, including a
+        # GENERATING left stale by a crashed worker (recovery without a periodic reaper).
+        if not _summary_run_in_flight(bot, STALE_GENERATING_MINUTES):
+            Bot.objects.filter(id=bot.id).update(summary_state=SummaryStates.PENDING, summary_error=None)
+            generate_meeting_summary.delay(bot.id)
+            bot.refresh_from_db()
+        return Response(MeetingSerializer(bot).data, status=status.HTTP_200_OK)
+
+
+def _summary_run_in_flight(bot, stale_minutes):
+    """True when a generation is genuinely still running, so a regenerate should be a safe no-op.
+
+    Staleness reads summary_started_at (a summary-only lease), not the shared updated_at which any
+    unrelated bot.save() bumps.
+    """
+    if bot.summary_state == SummaryStates.PENDING:
+        return True
+    if bot.summary_state == SummaryStates.GENERATING:
+        fresh_after = timezone.now() - timedelta(minutes=stale_minutes)
+        return bool(bot.summary_started_at and bot.summary_started_at > fresh_after)
+    return False
