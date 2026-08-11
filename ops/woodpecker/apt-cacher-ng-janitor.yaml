@@ -1,0 +1,80 @@
+# Self-heal for apt-cacher-ng (Option A).
+#
+# apt-cacher-ng can leave a volatile index (InRelease/Release) in a stuck state
+# and then return 500 for it until the cache entry is cleared; the pod has no
+# cron so it never self-heals. This CronJob periodically deletes the cached
+# index files, forcing acng to re-fetch fresh copies from the mirror. Package
+# (.deb) cache is untouched, so caching still works.
+#
+# Runs on the kubeadm cluster (kubernetes-admin@kubernetes), namespace
+# woodpecker, where apt-cacher-ng lives. NOT managed by the (GKE) ArgoCD app —
+# apply directly:
+#   kubectl --context kubernetes-admin@kubernetes apply -f ops/woodpecker/apt-cacher-ng-janitor.yaml
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: acng-cache-janitor
+  namespace: woodpecker
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: acng-cache-janitor
+  namespace: woodpecker
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: acng-cache-janitor
+  namespace: woodpecker
+subjects:
+  - kind: ServiceAccount
+    name: acng-cache-janitor
+    namespace: woodpecker
+roleRef:
+  kind: Role
+  name: acng-cache-janitor
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: acng-cache-janitor
+  namespace: woodpecker
+spec:
+  # Every 6 hours; a stuck index can never survive longer than this.
+  schedule: "0 */6 * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 120
+      template:
+        spec:
+          serviceAccountName: acng-cache-janitor
+          restartPolicy: OnFailure
+          containers:
+            - name: janitor
+              image: alpine/k8s:1.30.0
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  POD=$(kubectl -n woodpecker get pod -l app=apt-cacher-ng \
+                        -o jsonpath='{.items[0].metadata.name}')
+                  echo "apt-cacher-ng pod: $POD"
+                  kubectl -n woodpecker exec "$POD" -- sh -c \
+                    'find /var/cache/apt-cacher-ng -type f \
+                       \( -name "InRelease*" -o -name "Release*" \) -delete 2>/dev/null; \
+                     echo "volatile indexes cleared"'
