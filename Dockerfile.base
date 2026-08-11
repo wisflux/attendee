@@ -7,6 +7,9 @@
 # apt pulls directly from the Ubuntu mirrors. The cluster has direct egress
 # (the wget/ADD steps below already fetch Chrome, ChromeDriver and tini
 # directly), so no apt caching proxy is required.
+#
+# Bootstrap build: creates wisfluxp/attendee-base:latest so the app image can
+# build FROM it. Editing this file is what triggers base.yaml.
 FROM --platform=linux/amd64 ubuntu:22.04 AS base
 
 SHELL ["/bin/bash", "-c"]
