@@ -7,6 +7,8 @@
 #
 # When the base image's system dependencies change, rebuild and push
 # wisfluxp/attendee-base first (see Dockerfile.base), then rebuild this image.
+#
+# Rebuild trigger: pick up the freshly rebuilt attendee-base (apt-proxy fix).
 FROM --platform=linux/amd64 wisfluxp/attendee-base:latest AS build
 
 SHELL ["/bin/bash", "-c"]
