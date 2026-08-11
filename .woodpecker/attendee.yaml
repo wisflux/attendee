@@ -1,9 +1,19 @@
 # Rebuild trigger: use Woodpecker-native ${CI_COMMIT_SHA} substitution like auth-server's working pipeline
+
+# Wait for the base image build, but only when it actually runs. The base workflow
+# (.woodpecker/base.yaml) is triggered solely by Dockerfile.base changes; `optional: true`
+# lets this app build proceed normally when the base was NOT rebuilt, while enforcing
+# ordering (app builds FROM the fresh base) when it WAS. Requires Woodpecker >= 3.15.0.
+depends_on:
+  - name: base
+    optional: true
+
 when:
   - event: push
     branch: prod
     path:
       - "Dockerfile"
+      - "Dockerfile.base"
       - "requirements.txt"
       - "entrypoint.sh"
       - "manage.py"

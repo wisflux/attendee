@@ -1,0 +1,31 @@
+# Builds the base image (wisfluxp/attendee-base) that the application image
+# (Dockerfile) builds FROM. This is the slow build (all system deps, Chrome,
+# GStreamer, tini), so it runs ONLY when Dockerfile.base itself changes.
+#
+# Bootstrap: the first push that adds Dockerfile.base triggers this pipeline and
+# creates wisfluxp/attendee-base:latest, after which the app pipeline
+# (.woodpecker/attendee.yaml) can build FROM it.
+when:
+  - event: push
+    branch: prod
+    path:
+      - "Dockerfile.base"
+      - ".woodpecker/base.yaml"
+
+steps:
+  kaniko-base:
+    image: gcr.io/kaniko-project/executor:debug
+    environment:
+      DOCKERHUB_USERNAME:
+        from_secret: DOCKERHUB_USERNAME
+      DOCKERHUB_TOKEN:
+        from_secret: DOCKERHUB_TOKEN
+    commands:
+      - mkdir -p /kaniko/.docker
+      - echo "{\"auths\":{\"https://index.docker.io/v1/\":{\"username\":\"$DOCKERHUB_USERNAME\",\"password\":\"$DOCKERHUB_TOKEN\"}}}" > /kaniko/.docker/config.json
+      - >
+        /kaniko/executor
+        --context=.
+        --dockerfile=Dockerfile.base
+        --destination=wisfluxp/attendee-base:${CI_COMMIT_SHA:0:8}
+        --destination=wisfluxp/attendee-base:latest

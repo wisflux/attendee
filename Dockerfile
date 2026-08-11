@@ -1,4 +1,13 @@
-FROM --platform=linux/amd64 ubuntu:22.04 AS base
+# Application image for Attendee. Builds on the prebuilt base image
+# (Dockerfile.base -> wisfluxp/attendee-base), which carries all the heavy,
+# slow-changing system dependencies (build toolchain, OpenCV, X11, audio,
+# GStreamer, Chrome + ChromeDriver, tini, python). This image only adds the
+# Python dependencies and the application code, so it builds in seconds and
+# runs no apt.
+#
+# When the base image's system dependencies change, rebuild and push
+# wisfluxp/attendee-base first (see Dockerfile.base), then rebuild this image.
+FROM --platform=linux/amd64 wisfluxp/attendee-base:latest AS build
 
 SHELL ["/bin/bash", "-c"]
 
@@ -7,123 +16,15 @@ ENV cwd=/$project
 
 WORKDIR $cwd
 
-ARG DEBIAN_FRONTEND=noninteractive
-
-ARG APT_PROXY=http://apt-cacher-ng.woodpecker.svc.cluster.local:3142
-RUN if [ -n "${APT_PROXY}" ]; then echo "Acquire::http::Proxy \"${APT_PROXY}\";" > /etc/apt/apt.conf.d/01proxy; fi
-
-# Fix DNS in kaniko: resolv.conf symlinks to systemd-resolved which doesn't run there.
-# Skip silently when building locally (file is read-only in Docker Desktop).
-RUN if [ -w /etc/resolv.conf ]; then printf 'nameserver 10.96.0.10\n' > /etc/resolv.conf; fi
-
-#  Install Dependencies
-RUN apt-get update  \
-    && apt-get install -y \
-    build-essential \
-    ca-certificates \
-    cmake \
-    curl \
-    gdb \
-    git \
-    gfortran \
-    libopencv-dev \
-    libdbus-1-3 \
-    libgbm1 \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
-    libglib2.0-dev \
-    libssl-dev \
-    libx11-dev \
-    libx11-xcb1 \
-    libxcb-image0 \
-    libxcb-keysyms1 \
-    libxcb-randr0 \
-    libxcb-shape0 \
-    libxcb-shm0 \
-    libxcb-xfixes0 \
-    libxcb-xtest0 \
-    libgl1-mesa-dri \
-    libxfixes3 \
-    linux-libc-dev \
-    pkgconf \
-    python3-pip \
-    tar \
-    unzip \
-    zip \
-    vim \
-    libpq-dev
-
-# Install Chrome dependencies
-RUN apt-get install -y xvfb xauth x11-xkb-utils xfonts-100dpi xfonts-75dpi xfonts-scalable xfonts-cyrillic x11-apps libvulkan1 fonts-liberation xdg-utils wget
-# Install a specific version of Chrome.
-RUN wget --progress=dot:giga --timeout=30 --tries=3 https://mirror.cs.uchicago.edu/google-chrome/pool/main/g/google-chrome-stable/google-chrome-stable_134.0.6998.88-1_amd64.deb
-# Verify that the package is correct, since this is a mirror.
-RUN echo "df557edb3d24d8dcaff9557d80733b42afb6626685200d3f34a3b6f528065cad  google-chrome-stable_134.0.6998.88-1_amd64.deb" | sha256sum -c -
-RUN apt-get install -y ./google-chrome-stable_134.0.6998.88-1_amd64.deb
-
-# Install a specific version of ChromeDriver.
-RUN wget -q https://storage.googleapis.com/chrome-for-testing-public/134.0.6998.88/linux64/chromedriver-linux64.zip \
-    && unzip chromedriver-linux64.zip \
-    && mv chromedriver-linux64/chromedriver /usr/local/bin/chromedriver \
-    && chmod +x /usr/local/bin/chromedriver \
-    && rm -rf chromedriver-linux64 chromedriver-linux64.zip
-
-# Install ALSA
-RUN apt-get update && apt-get install -y libasound2 libasound2-plugins alsa alsa-utils alsa-oss
-
-# Install Pulseaudio
-RUN apt-get install -y pulseaudio pulseaudio-utils ffmpeg
-
-# Install Linux Kernel Dev
-RUN apt-get update && apt-get install -y linux-libc-dev
-
-# Update certificates
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && update-ca-certificates
-
-# Install Ctags
-RUN apt-get update && apt-get install -y universal-ctags
-
-# Install xterm
-RUN apt-get update && apt-get install -y xterm
-
-# Install xmlsec1
-RUN apt-get update && apt-get install -y xmlsec1
-
-# Install xclip
-RUN apt-get update && apt-get install -y xclip
-
-# Install libavdevice-dev. Needed so that webpage streaming using pyav will work.
-RUN apt-get update && apt-get install -y libavdevice-dev && pip uninstall -y av && pip install --no-binary av "av==12.0.0"
-
-# Install gstreamer
-RUN apt-get install -y gstreamer1.0-alsa gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgirepository1.0-dev --fix-missing
-
-# Alias python3 to python
-RUN ln -s /usr/bin/python3 /usr/bin/python
-
-FROM base AS deps
-
-# Copy only requirements.txt first to leverage Docker cache
+# Python dependencies. Copy requirements first so this layer only rebuilds when
+# they change. pyav must be compiled from source against the base image's
+# libavdevice-dev (not the prebuilt wheel) for webpage streaming to work.
 COPY requirements.txt .
-RUN pip install -r requirements.txt
-
-ENV TINI_VERSION=v0.19.0
-ADD https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini /tini
-RUN chmod +x /tini
-
-WORKDIR /opt
-
-FROM deps AS build
+RUN pip install -r requirements.txt \
+    && pip install --no-binary av --force-reinstall --no-deps "av==12.0.0"
 
 # Create non-root user
 RUN useradd -m -u 1000 -s /bin/bash app
-
-ENV project=attendee
-ENV cwd=/$project
-WORKDIR $cwd
 
 COPY --chown=app:app --chmod=0755 entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY --chown=app:app . .
