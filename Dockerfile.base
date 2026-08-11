@@ -4,12 +4,13 @@
 # application image (Dockerfile) builds FROM it and only adds Python deps +
 # code, so day-to-day app builds are fast and run no apt at all.
 #
-# apt pulls directly from the Ubuntu mirrors. The cluster has direct egress
-# (the wget/ADD steps below already fetch Chrome, ChromeDriver and tini
-# directly), so no apt caching proxy is required.
+# apt MUST go through the in-cluster apt-cacher-ng proxy: build pods cannot
+# reach the Ubuntu mirrors (archive/security.ubuntu.com) directly — those
+# connections time out. HTTPS CDNs (Docker Hub, GitHub, googleapis, the Chrome
+# mirror below) ARE reachable, which is why the wget/ADD steps work without a
+# proxy; only apt needs it.
 #
-# Bootstrap build: creates wisfluxp/attendee-base:latest so the app image can
-# build FROM it. Editing this file is what triggers base.yaml.
+# Editing this file is what triggers base.yaml to rebuild wisfluxp/attendee-base.
 FROM --platform=linux/amd64 ubuntu:22.04 AS base
 
 SHELL ["/bin/bash", "-c"]
@@ -21,8 +22,11 @@ WORKDIR $cwd
 
 ARG DEBIAN_FRONTEND=noninteractive
 
-# Retry transient mirror hiccups instead of failing the build outright.
-RUN printf 'Acquire::Retries "3";\nAcquire::http::Timeout "20";\n' > /etc/apt/apt.conf.d/80-retries
+# Route apt through the in-cluster apt-cacher-ng proxy — the only egress path to
+# the Ubuntu mirrors from build pods — and retry transient hiccups.
+ARG APT_PROXY=http://apt-cacher-ng.woodpecker.svc.cluster.local:3142
+RUN if [ -n "${APT_PROXY}" ]; then echo "Acquire::http::Proxy \"${APT_PROXY}\";" > /etc/apt/apt.conf.d/01proxy; fi \
+ && printf 'Acquire::Retries "3";\nAcquire::http::Timeout "20";\n' > /etc/apt/apt.conf.d/80-retries
 
 # Fix DNS in kaniko: resolv.conf symlinks to systemd-resolved which doesn't run there.
 # Skip silently when building locally (file is read-only in Docker Desktop).
