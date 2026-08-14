@@ -29,7 +29,8 @@ Produce **one structured notes document** from this transcript.
 - **ASR artifacts** — if names or words are clearly garbled, note the likely intended word in brackets, e.g. "Kawika" [ASR: "Kamika"]. Never change the transcript words, only annotate.
 - Order topic sections roughly by when each topic first arose, so the document loosely mirrors the conversation's flow.
 - Where chronology matters within a topic (a position changed, a decision was reversed, an objection redirected the discussion), note that evolution inline — e.g., "*initially proposed X, revised to Y after [person]'s concern about Z*."
-- Omit any sub-section that has no content (don't write "None"). Exception: the three consolidated lists at the end — if one is empty, state "None recorded" so it's clear nothing was missed.
+- Write each topic as narrative prose. Do NOT add per-topic Decisions / Proposals / Action items / Open questions headings — capture proposals and how positions evolved inside the narrative itself. Every decision, action item, and open question is collected once, in the Consolidated Summary at the end, each tagged with its topic.
+- Never write "None" or "None recorded" inside a topic. The only place "None recorded" may appear is a consolidated list at the end that is genuinely empty, so it's clear nothing was missed.
 
 ## Response format
 
@@ -52,23 +53,10 @@ major turns or pivots. The narrative arc — no details, those go below.]
 ## Topics
 
 ### 1. [Topic name]
-**Context / discussion**
-- [Detail — attributed: "Name said/argued/asked..."]
-
-**Decisions**
-- [Decision — who made it, and any conditions attached]
-
-**Proposals**
-- [Proposal — by whom, status: accepted / rejected / parked]
-
-**Action items**
-- [ ] [Owner] — [task] — [deadline if stated, else "no deadline stated"]
-
-**Open questions**
-- [Question — raised by whom, why it's unresolved]
+[Narrative prose — the exhaustive detail for this topic, attributed to speakers ("Name said/argued/asked..."): what was discussed, any proposals and their fate (accepted / rejected / parked), objections, and how positions evolved. Lose no detail. No sub-headings and no "None" lines — decisions, action items and open questions are gathered in the Consolidated Summary below.]
 
 ### 2. [Next topic]
-[...same sub-structure...]
+[...same narrative...]
 
 ## Consolidated Summary
 
