@@ -440,6 +440,13 @@ class Calendar(models.Model):
     metadata = models.JSONField(null=True, blank=True)
     deduplication_key = models.CharField(max_length=1024, null=True, blank=True, help_text="Optional key for deduplicating calendars")
 
+    # The team.day user who created this calendar (stamped from the caller's verified JWT, never
+    # from client input). Stored as a string to match how Bot.owner_user_id already stringifies
+    # the same id. Single-owner, unlike Bot -- a calendar connection is never shared, so there is
+    # no viewer_user_ids counterpart here. NULL only for rows that predate this field (there are
+    # none: this column ships with no backfill).
+    owner_user_id = models.CharField(max_length=255, null=True, blank=True, editable=False)
+
     client_id = models.CharField(max_length=255)
     platform_uuid = models.CharField(max_length=1024, null=True, blank=True)
 
