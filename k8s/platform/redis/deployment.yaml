@@ -39,9 +39,9 @@ spec:
           resources:
             requests:
               cpu: 100m
-              memory: 128Mi
+              memory: 64Mi
             limits:
-              memory: 512Mi
+              memory: 256Mi
       volumes:
         - name: redis-data
           persistentVolumeClaim:
