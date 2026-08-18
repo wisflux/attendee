@@ -9,13 +9,22 @@ from .serializers import CreateCalendarSerializer
 logger = logging.getLogger(__name__)
 
 
-def create_calendar(data, project):
+def create_calendar(data, project, owner_user_id=None):
     """
     Create a new calendar for the given project.
 
     Args:
         data: Dictionary containing calendar creation data
         project: Project instance to associate the calendar with
+        owner_user_id: The verified team.day member id to stamp as the creator, or None.
+            Stamped directly (like Bot.owner_user_id on a local session), not via the
+            claim-only-if-unset UPDATE that bot dispatch uses -- that guard exists there because
+            a dedup match can return an *existing* bot for a second caller to claim. A calendar
+            is never reused that way: a deduplication_key collision raises IntegrityError before
+            any row exists to steal, so there is no existing owner to protect against here.
+            Optional only so tests that create calendars directly (bypassing the view, which
+            requires the token) don't need one; CalendarListCreateView.post always resolves and
+            passes a real id via decode_user_id.
 
     Returns:
         tuple: (calendar_instance, error_dict)
@@ -32,7 +41,7 @@ def create_calendar(data, project):
     try:
         with transaction.atomic():
             # Create the calendar instance
-            calendar = Calendar(project=project, platform=validated_data["platform"], client_id=validated_data["client_id"], state=CalendarStates.CONNECTED, metadata=validated_data.get("metadata"), deduplication_key=validated_data.get("deduplication_key"), platform_uuid=validated_data.get("platform_uuid"))
+            calendar = Calendar(project=project, platform=validated_data["platform"], client_id=validated_data["client_id"], state=CalendarStates.CONNECTED, metadata=validated_data.get("metadata"), deduplication_key=validated_data.get("deduplication_key"), platform_uuid=validated_data.get("platform_uuid"), owner_user_id=owner_user_id)
 
             # Set encrypted credentials (client_secret and refresh_token)
             credentials = {"client_secret": validated_data["client_secret"], "refresh_token": validated_data["refresh_token"]}

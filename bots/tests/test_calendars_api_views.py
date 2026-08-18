@@ -1,7 +1,7 @@
 from datetime import timedelta
 from urllib.parse import urlencode
 
-from django.test import Client, TransactionTestCase
+from django.test import Client, TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework import status
 
@@ -15,7 +15,10 @@ from bots.models import (
     Project,
 )
 
+from .meetings_api_base import JWT_SECRET, MEMBER_A, member_token
 
+
+@override_settings(TEAM_DAY_JWT_SECRET=JWT_SECRET)
 class CalendarEventListViewTest(TransactionTestCase):
     """Tests for CalendarEventListView API endpoint."""
 
@@ -30,13 +33,17 @@ class CalendarEventListViewTest(TransactionTestCase):
         self.api_key_a, self.api_key_a_plain = ApiKey.create(project=self.project_a, name="API Key A")
         self.api_key_b, self.api_key_b_plain = ApiKey.create(project=self.project_b, name="API Key B")
 
-        # Create calendars
+        # Create calendars. Every request in this file authenticates as MEMBER_A, so calendar_a
+        # (and everything created from it below) is owned by MEMBER_A -- these tests are about
+        # project isolation, not ownership isolation (that's covered by test_calendars_access_api.py),
+        # so calendar_b's owner is irrelevant and left unset.
         self.calendar_a = Calendar.objects.create(
             project=self.project_a,
             platform=CalendarPlatform.GOOGLE,
             client_id="client_id_a",
             state=CalendarStates.CONNECTED,
             deduplication_key="dedup_key_a",
+            owner_user_id=MEMBER_A,
         )
         self.calendar_b = Calendar.objects.create(
             project=self.project_b,
@@ -78,9 +85,9 @@ class CalendarEventListViewTest(TransactionTestCase):
 
         self.client = Client()
 
-    def _make_authenticated_request(self, method, url, api_key, data=None):
+    def _make_authenticated_request(self, method, url, api_key, data=None, member=MEMBER_A):
         """Helper method to make authenticated API requests."""
-        headers = {"HTTP_AUTHORIZATION": f"Token {api_key}", "HTTP_CONTENT_TYPE": "application/json"}
+        headers = {"HTTP_AUTHORIZATION": f"Token {api_key}", "HTTP_CONTENT_TYPE": "application/json", "HTTP_X_USER_TOKEN": member_token(member)}
 
         if method.upper() == "GET":
             return self.client.get(url, **headers)
@@ -109,6 +116,7 @@ class CalendarEventListViewTest(TransactionTestCase):
             client_id="client_id_a2",
             state=CalendarStates.CONNECTED,
             deduplication_key="dedup_key_a2",
+            owner_user_id=MEMBER_A,
         )
         event_a3 = CalendarEvent.objects.create(
             calendar=calendar_a2,

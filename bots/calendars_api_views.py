@@ -1,3 +1,20 @@
+"""Per-member calendar connections and their events.
+
+One project API key is shared by every desktop install, so (as with ``/meetings``) the
+``X-User-Token`` is what identifies *which* member a calendar belongs to. Unlike a meeting, a
+calendar connection is never shared between members -- there is no viewer list, only
+``Calendar.owner_user_id`` -- so the rules are simpler:
+
+* **Ownership is a filter, never a check afterwards.** A calendar that isn't yours is
+  indistinguishable from one that doesn't exist -- see ``CalendarDetailPatchDeleteView``, whose
+  ``.get(owner_user_id=...)`` turns a cross-member lookup into a plain ``DoesNotExist`` -> 404.
+* **Never build the query from an empty member id.** ``decode_user_id`` is required (raises
+  401/503) before any queryset is touched, on every view in this module -- there is no optional
+  path here as there is for bot dispatch, because a calendar with no owner would be unreachable.
+* **The project scope stays too, alongside the owner scope** (defense in depth) -- exactly as
+  today, just narrowed further by ``owner_user_id``.
+"""
+
 from django.utils.dateparse import parse_datetime
 from drf_spectacular.openapi import OpenApiResponse
 from drf_spectacular.utils import OpenApiExample, OpenApiParameter, extend_schema
@@ -12,6 +29,7 @@ from .calendars_api_utils import create_calendar, delete_calendar
 from .models import Calendar, CalendarEvent
 from .serializers import CalendarEventSerializer, CalendarSerializer, CreateCalendarSerializer, PatchCalendarSerializer
 from .tasks.sync_calendar_task import enqueue_sync_calendar_task
+from .team_day_user_auth import decode_user_id
 from .throttling import ProjectPostThrottle
 
 TokenHeaderParameter = [
@@ -30,6 +48,13 @@ TokenHeaderParameter = [
         description="Should always be application/json",
         required=True,
         default="application/json",
+    ),
+    OpenApiParameter(
+        name="X-User-Token",
+        type=str,
+        location=OpenApiParameter.HEADER,
+        description="Verified team.day member JWT identifying which user owns this calendar.",
+        required=True,
     ),
 ]
 
@@ -91,7 +116,8 @@ class CalendarListCreateView(GenericAPIView):
         tags=["Calendars"],
     )
     def get(self, request):
-        calendars = Calendar.objects.filter(project=request.auth.project)
+        owner_user_id = decode_user_id(request)
+        calendars = Calendar.objects.filter(project=request.auth.project, owner_user_id=owner_user_id)
 
         # Apply deduplication_key filter if provided
         deduplication_key = request.query_params.get("deduplication_key")
@@ -126,7 +152,11 @@ class CalendarListCreateView(GenericAPIView):
         tags=["Calendars"],
     )
     def post(self, request):
-        calendar, error = create_calendar(data=request.data, project=request.auth.project)
+        # Resolved (and the request rejected if missing/invalid) before anything is created, so a
+        # bad token never produces a calendar nobody can find.
+        owner_user_id = decode_user_id(request)
+
+        calendar, error = create_calendar(data=request.data, project=request.auth.project, owner_user_id=owner_user_id)
         if error:
             return Response(error, status=status.HTTP_400_BAD_REQUEST)
 
@@ -164,8 +194,11 @@ class CalendarDetailPatchDeleteView(APIView):
         tags=["Calendars"],
     )
     def get(self, request, object_id):
+        owner_user_id = decode_user_id(request)
         try:
-            calendar = Calendar.objects.get(object_id=object_id, project=request.auth.project)
+            # Filtering on owner_user_id (never checking it after the fetch) means another
+            # member's calendar is indistinguishable from one that doesn't exist.
+            calendar = Calendar.objects.get(object_id=object_id, project=request.auth.project, owner_user_id=owner_user_id)
             return Response(CalendarSerializer(calendar).data, status=status.HTTP_200_OK)
         except Calendar.DoesNotExist:
             return Response({"error": "Calendar not found"}, status=status.HTTP_404_NOT_FOUND)
@@ -197,8 +230,9 @@ class CalendarDetailPatchDeleteView(APIView):
         tags=["Calendars"],
     )
     def patch(self, request, object_id):
+        owner_user_id = decode_user_id(request)
         try:
-            calendar = Calendar.objects.get(object_id=object_id, project=request.auth.project)
+            calendar = Calendar.objects.get(object_id=object_id, project=request.auth.project, owner_user_id=owner_user_id)
         except Calendar.DoesNotExist:
             return Response({"error": "Calendar not found"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -258,8 +292,9 @@ class CalendarDetailPatchDeleteView(APIView):
         tags=["Calendars"],
     )
     def delete(self, request, object_id):
+        owner_user_id = decode_user_id(request)
         try:
-            calendar = Calendar.objects.get(object_id=object_id, project=request.auth.project)
+            calendar = Calendar.objects.get(object_id=object_id, project=request.auth.project, owner_user_id=owner_user_id)
             success, error = delete_calendar(calendar)
             if error:
                 return Response(error, status=status.HTTP_400_BAD_REQUEST)
@@ -365,8 +400,10 @@ class CalendarEventListView(GenericAPIView):
         tags=["Calendars"],
     )
     def get(self, request):
-        # Start with all events for calendars in the authenticated project
-        events = CalendarEvent.objects.filter(calendar__project=request.auth.project).select_related("calendar")
+        owner_user_id = decode_user_id(request)
+        # Start with all events for this member's calendars in the authenticated project. Keeping
+        # the project filter alongside owner_user_id is defense in depth, not redundancy.
+        events = CalendarEvent.objects.filter(calendar__project=request.auth.project, calendar__owner_user_id=owner_user_id).select_related("calendar")
 
         # Apply calendar_id filter if provided
         calendar_id = request.query_params.get("calendar_id")
