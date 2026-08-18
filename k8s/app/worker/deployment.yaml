@@ -33,9 +33,9 @@ spec:
           resources:
             requests:
               cpu: 500m
-              memory: 512Mi
+              memory: 768Mi
             limits:
-              memory: 2Gi
+              memory: 1536Mi
           securityContext:
             runAsNonRoot: true
             runAsUser: 1000
