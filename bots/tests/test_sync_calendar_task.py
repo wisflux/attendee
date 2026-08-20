@@ -27,6 +27,7 @@ from bots.tasks.sync_calendar_task import (
     enqueue_sync_calendar_task,
     extract_meeting_url_from_text,
     microsoft_token_url,
+    notification_channel_url_is_stale,
     sync_bot_with_calendar_event,
     sync_bots_for_calendar_event,
     sync_calendar,
@@ -1011,6 +1012,43 @@ class TestMicrosoftNotificationChannelLifecycle(TransactionTestCase):
         notification_channel = CalendarNotificationChannel.objects.get(calendar=self.calendar)
         self.assertEqual(notification_channel.platform_uuid, "microsoft_subscription_uuid_123")
 
+    @patch.dict("os.environ", {"EXTERNAL_WEBHOOK_SITE_DOMAIN": "attendee.apps.wisflux.com"})
+    @patch("bots.tasks.sync_calendar_task.MicrosoftCalendarSyncHandler._list_events")
+    @patch("bots.tasks.sync_calendar_task.MicrosoftCalendarSyncHandler._get_event_by_id")
+    @patch("bots.tasks.sync_calendar_task.MicrosoftCalendarSyncHandler._get_access_token")
+    @patch("bots.tasks.sync_calendar_task.MicrosoftCalendarSyncHandler._make_graph_request")
+    @patch("bots.tasks.sync_calendar_task.trigger_webhook")
+    def test_notification_channel_recreated_when_url_is_stale(self, mock_trigger_webhook, mock_make_graph_request, mock_get_access_token, mock_get_event, mock_list_events):
+        """A channel registered to a now-wrong webhook host is recreated (not just
+        extended) so change-notifications reach the current deployment."""
+        # Existing channel points at the old host — different from the expected URL.
+        CalendarNotificationChannel.objects.create(
+            calendar=self.calendar,
+            platform_uuid="old_subscription_uuid",
+            unique_key=f"notification_channel_{self.calendar.object_id}",
+            expires_at=timezone.now() + timedelta(days=5),
+            raw={"id": "old_subscription_uuid", "notificationUrl": "https://app.attendee.dev/external_webhooks/microsoft_calendar"},
+        )
+
+        mock_get_access_token.return_value = "mock_token"
+        mock_list_events.return_value = []
+        mock_get_event.return_value = None
+        # The Graph create (POST /subscriptions) response for the fresh channel.
+        mock_make_graph_request.return_value = {
+            "id": "new_subscription_uuid",
+            "expirationDateTime": (timezone.now() + timedelta(days=7)).isoformat(),
+        }
+
+        enqueue_sync_calendar_task(self.calendar)
+
+        # Exactly one channel remains, and it is the freshly-created one.
+        self.assertEqual(CalendarNotificationChannel.objects.filter(calendar=self.calendar).count(), 1)
+        channel = CalendarNotificationChannel.objects.get(calendar=self.calendar)
+        self.assertEqual(channel.platform_uuid, "new_subscription_uuid")
+        # A create (POST) happened — the stale channel was replaced, not merely extended.
+        post_calls = [c for c in mock_make_graph_request.call_args_list if c.kwargs.get("method") == "POST"]
+        self.assertEqual(len(post_calls), 1)
+
     @patch("bots.tasks.sync_calendar_task.MicrosoftCalendarSyncHandler._list_events")
     @patch("bots.tasks.sync_calendar_task.MicrosoftCalendarSyncHandler._get_event_by_id")
     @patch("bots.tasks.sync_calendar_task.MicrosoftCalendarSyncHandler._get_access_token")
@@ -1151,3 +1189,26 @@ class TestMicrosoftTokenUrl(TestCase):
             microsoft_token_url({"tenant_id": ""}),
             "https://login.microsoftonline.com/common/oauth2/v2.0/token",
         )
+
+
+class TestNotificationChannelUrlIsStale(TestCase):
+    """A Microsoft notification channel is stale only when it carries a registered
+    URL that differs from the one we would register now (e.g. the webhook domain
+    was corrected). A missing URL is left alone so existing channels keep being
+    extended in place rather than needlessly recreated."""
+
+    EXPECTED = "https://attendee.apps.wisflux.com/external_webhooks/microsoft_calendar"
+
+    def test_present_and_different_is_stale(self):
+        old = "https://app.attendee.dev/external_webhooks/microsoft_calendar"
+        self.assertTrue(notification_channel_url_is_stale(old, self.EXPECTED))
+
+    def test_present_and_equal_is_not_stale(self):
+        self.assertFalse(notification_channel_url_is_stale(self.EXPECTED, self.EXPECTED))
+
+    def test_missing_url_is_not_stale(self):
+        # Older channels stored no notificationUrl; we can't judge them, so leave them be.
+        self.assertFalse(notification_channel_url_is_stale(None, self.EXPECTED))
+
+    def test_empty_url_is_not_stale(self):
+        self.assertFalse(notification_channel_url_is_stale("", self.EXPECTED))

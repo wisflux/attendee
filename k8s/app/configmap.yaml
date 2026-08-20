@@ -22,6 +22,10 @@ data:
   DISABLE_EMAIL: "true"
   ALLOWED_HOSTS: "*"
   CSRF_TRUSTED_ORIGINS: "https://attendee.apps.wisflux.com"
+  # Public host Microsoft/Google must call for calendar change-notifications.
+  # Without it, build_site_url falls back to SITE_DOMAIN's default (app.attendee.dev)
+  # and Graph webhooks never reach this deployment. Bare domain — no scheme/slash.
+  EXTERNAL_WEBHOOK_SITE_DOMAIN: "attendee.apps.wisflux.com"
   BOT_POD_IMAGE: "wisfluxp/attendee"
   BOT_POD_CONFIG_MAP_NAME: "attendee-config"
   BOT_POD_SECRETS_NAME: "attendee-secret"

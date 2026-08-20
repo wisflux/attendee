@@ -581,6 +581,15 @@ def microsoft_token_url(metadata: dict | None) -> str:
     return f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
 
 
+def notification_channel_url_is_stale(registered_url, expected_url) -> bool:
+    """Whether a notification channel must be recreated because the URL it was
+    registered with no longer matches the one we would register now (e.g. the
+    webhook site domain was corrected). A missing/blank registered URL is left
+    alone so pre-existing channels keep being extended in place, not recreated.
+    """
+    return bool(registered_url) and registered_url != expected_url
+
+
 class MicrosoftCalendarSyncHandler(CalendarSyncHandler):
     """
     Handler for syncing calendar events with Microsoft Graph Calendar API.
@@ -596,9 +605,25 @@ class MicrosoftCalendarSyncHandler(CalendarSyncHandler):
     CALENDAR_EVENT_SELECT_FIELDS = "id,subject,start,end,attendees,organizer,iCalUId,seriesMasterId,isCancelled,isOnlineMeeting,onlineMeetingProvider,onlineMeeting,onlineMeetingUrl,location,body,webLink"
     NOTIFICATION_CHANNEL_EXPIRATION_TIME_MINUTES = 10070 - 1
 
+    def _expected_notification_url(self) -> str:
+        return build_site_url(reverse("external_webhooks:external-webhook-microsoft-calendar"))
+
+    def _notification_channel_is_stale(self, notification_channel: CalendarNotificationChannel) -> bool:
+        registered_url = (notification_channel.raw or {}).get("notificationUrl")
+        return notification_channel_url_is_stale(registered_url, self._expected_notification_url())
+
     def _refresh_notification_channels(self):
         # For microsoft calendars, we only need one notification channel. We can keep updating it to increase the expiration time.
         notification_channel = self.calendar.notification_channels.first()
+
+        if notification_channel and self._notification_channel_is_stale(notification_channel):
+            # The webhook URL changed (e.g. the site domain was corrected). The old Graph
+            # subscription delivers to the wrong host and would never be received, so drop
+            # the row and let a fresh channel be created below with the current URL. The
+            # orphaned Graph subscription self-expires within its max lifetime.
+            logger.info(f"Calendar {self.calendar.object_id}: notification channel URL is stale; recreating with the current webhook URL")
+            notification_channel.delete()
+            notification_channel = None
 
         if not notification_channel:
             self._create_notification_channel()
@@ -649,7 +674,7 @@ class MicrosoftCalendarSyncHandler(CalendarSyncHandler):
         else:
             resource_url = "me/calendar/events"
         expires_at = timezone.now() + timedelta(minutes=self.NOTIFICATION_CHANNEL_EXPIRATION_TIME_MINUTES)
-        body = {"changeType": "created,updated,deleted", "notificationUrl": build_site_url(reverse("external_webhooks:external-webhook-microsoft-calendar")), "resource": resource_url, "clientState": json.dumps({"calendar_id": self.calendar.object_id}), "expirationDateTime": expires_at.isoformat(), "latestSupportedTlsVersion": "v1_2"}
+        body = {"changeType": "created,updated,deleted", "notificationUrl": self._expected_notification_url(), "resource": resource_url, "clientState": json.dumps({"calendar_id": self.calendar.object_id}), "expirationDateTime": expires_at.isoformat(), "latestSupportedTlsVersion": "v1_2"}
         logger.info(f"Calendar {self.calendar.object_id}: Creating Microsoft Calendar notification channel. Body: {body}")
         access_token = self._get_access_token()
         response = self._make_graph_request(url, access_token, method="POST", body=body)
