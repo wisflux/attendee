@@ -26,6 +26,7 @@ from bots.tasks.sync_calendar_task import (
     MicrosoftCalendarSyncHandler,
     enqueue_sync_calendar_task,
     extract_meeting_url_from_text,
+    microsoft_token_url,
     sync_bot_with_calendar_event,
     sync_bots_for_calendar_event,
     sync_calendar,
@@ -1116,4 +1117,37 @@ class TestMicrosoftNotificationChannelLifecycle(TransactionTestCase):
         self.assertFalse(
             CalendarNotificationChannel.objects.filter(platform_uuid="orphaned_subscription_uuid").exists(),
             "The notification channel with orphaned_subscription_uuid should not exist",
+        )
+
+
+class TestMicrosoftTokenUrl(TestCase):
+    """The Microsoft OAuth token endpoint must be tenant-specific for our
+    single-tenant Azure app; /common/ is rejected with AADSTS50194. The tenant
+    rides in the calendar metadata (stamped by the connect host)."""
+
+    def test_uses_tenant_from_metadata(self):
+        url = microsoft_token_url({"tenant_id": "54de7389-6f80-4c5e-a192-2a583911a555"})
+        self.assertEqual(
+            url,
+            "https://login.microsoftonline.com/54de7389-6f80-4c5e-a192-2a583911a555/oauth2/v2.0/token",
+        )
+
+    def test_falls_back_to_common_when_metadata_is_none(self):
+        # Older calendars / other customers have no tenant recorded -> keep the
+        # previous /common/ behavior, so their sync is unchanged.
+        self.assertEqual(
+            microsoft_token_url(None),
+            "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        )
+
+    def test_falls_back_to_common_when_tenant_id_absent(self):
+        self.assertEqual(
+            microsoft_token_url({"something_else": "x"}),
+            "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        )
+
+    def test_blank_tenant_id_falls_back_to_common(self):
+        self.assertEqual(
+            microsoft_token_url({"tenant_id": ""}),
+            "https://login.microsoftonline.com/common/oauth2/v2.0/token",
         )

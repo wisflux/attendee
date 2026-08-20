@@ -568,6 +568,19 @@ class GoogleCalendarSyncHandler(CalendarSyncHandler):
         }
 
 
+def microsoft_token_url(metadata: dict | None) -> str:
+    """Build the Microsoft OAuth token endpoint for a calendar.
+
+    A single-tenant Azure app must refresh at its own tenant's endpoint; the
+    /common/ endpoint is rejected with AADSTS50194. The tenant id is stamped into
+    the calendar metadata by the connect host. When it is absent (older
+    calendars, or other customers' multi-tenant apps) we keep /common/, which
+    preserves the previous behavior.
+    """
+    tenant = (metadata or {}).get("tenant_id") or "common"
+    return f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
+
+
 class MicrosoftCalendarSyncHandler(CalendarSyncHandler):
     """
     Handler for syncing calendar events with Microsoft Graph Calendar API.
@@ -579,7 +592,6 @@ class MicrosoftCalendarSyncHandler(CalendarSyncHandler):
       credentials with the new refresh_token when present.
     """
 
-    TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
     GRAPH_BASE = "https://graph.microsoft.com/v1.0"
     CALENDAR_EVENT_SELECT_FIELDS = "id,subject,start,end,attendees,organizer,iCalUId,seriesMasterId,isCancelled,isOnlineMeeting,onlineMeetingProvider,onlineMeeting,onlineMeetingUrl,location,body,webLink"
     NOTIFICATION_CHANNEL_EXPIRATION_TIME_MINUTES = 10070 - 1
@@ -698,7 +710,7 @@ class MicrosoftCalendarSyncHandler(CalendarSyncHandler):
         }
 
         try:
-            response = requests.post(self.TOKEN_URL, data=data, timeout=30)
+            response = requests.post(microsoft_token_url(self.calendar.metadata), data=data, timeout=30)
             response.raise_for_status()
             token_data = response.json()
 
