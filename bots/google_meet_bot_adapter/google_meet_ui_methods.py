@@ -22,6 +22,7 @@ from bots.google_meet_bot_adapter.okta_authenticator import OktaAuthenticator, O
 from bots.models import RecordingViews
 from bots.web_bot_adapter.ui_methods import UiCouldNotClickElementException, UiCouldNotJoinMeetingWaitingForHostException, UiCouldNotJoinMeetingWaitingRoomTimeoutException, UiCouldNotLocateElementException, UiLoginAttemptFailedException, UiLoginRequiredException, UiMeetingNotFoundException, UiRequestToJoinDeniedException, UiRetryableExpectedException
 
+from .click_targeting import compute_click_target_rect
 from .mocap_manager import MocapManager
 
 logger = logging.getLogger(__name__)
@@ -372,18 +373,9 @@ class GoogleMeetUIMethods:
         if width <= 0 or height <= 0:
             raise RuntimeError(f"Element has invalid size: {width}x{height}")
 
-        # Clickable rect: half the width and half the height, centered
-        inset_x = 0
-        inset_y = 0
-        clickable_css_left = left + inset_x
-        clickable_css_right = left + width - inset_x
-        clickable_css_top = top + inset_y
-        clickable_css_bottom = top + height - inset_y
-
-        rect_left = int(round((screen_x + clickable_css_left) * dpr))
-        rect_top = int(round((screen_y + clickable_css_top) * dpr))
-        rect_right = int(round((screen_x + clickable_css_right) * dpr))
-        rect_bottom = int(round((screen_y + clickable_css_bottom) * dpr))
+        # Aim at the element's centre, not its full box: an endpoint on the outermost pixel
+        # resolves to a neighbouring element in the elementFromPoint check below and is discarded.
+        rect_left, rect_top, rect_right, rect_bottom = compute_click_target_rect(left=left, top=top, width=width, height=height, screen_x=screen_x, screen_y=screen_y, dpr=dpr)
 
         ptr = self.x11_input.root.query_pointer()._data
         current_x = int(ptr["root_x"])
@@ -392,19 +384,26 @@ class GoogleMeetUIMethods:
         logger.info(f"humanized interaction: mouse at ({current_x},{current_y}), clickable rect [({rect_left},{rect_top})-({rect_right},{rect_bottom})]")
 
         seq = None
+        used_stretched_path = False
         num_seq_attempts = 10
         for attempt in range(num_seq_attempts):
             seq = self.mocap_manager.find_random_sequence_landing_in_rect(current_x, current_y, rect_left, rect_top, rect_right, rect_bottom)
 
-            # If we have hit dead ends 2 times in the past, we will stretch the mocap path to fit the desired endpoint
-            if self.number_of_times_mocap_sequence_not_available > 1 and seq is None:
+            # Stretch/rotate a recorded path to reach the target as soon as no path lands there
+            # on its own. Gating this behind earlier dead ends spent a whole join attempt -- and
+            # a fresh browser -- per dead end before the fallback was allowed to run.
+            # Nothing feeding the search above changes between attempts (the mouse does not move
+            # until the path is replayed), so a miss on one attempt is a miss on all of them:
+            # run this comparatively expensive search once, never once per attempt.
+            if seq is None:
                 logger.warning(f"No mocap sequence lands inside clickable rect from ({current_x},{current_y}) to [({rect_left},{rect_top})-({rect_right},{rect_bottom})]. Stretching and rotating the mocap path to fit the desired endpoint.")
                 seq = self.mocap_manager.find_random_sequence_landing_in_rect_with_stretch_and_rotation_allowed(current_x, current_y, rect_left, rect_top, rect_right, rect_bottom)
+                used_stretched_path = True
 
             if seq is None:
                 self.number_of_times_mocap_sequence_not_available += 1
                 # This will trigger a retry
-                raise UiMocapSequenceNotAvailableException(f"No mocap sequence lands inside clickable rect from ({current_x},{current_y}) to [({rect_left},{rect_top})-({rect_right},{rect_bottom})]")
+                raise UiMocapSequenceNotAvailableException(f"No mocap sequence lands inside clickable rect from ({current_x},{current_y}) to [({rect_left},{rect_top})-({rect_right},{rect_bottom})], even with stretching and rotation (dead end #{self.number_of_times_mocap_sequence_not_available} for this bot)")
 
             endpoint_monitor_x = current_x + seq.total_dx
             endpoint_monitor_y = current_y + seq.total_dy
@@ -424,6 +423,14 @@ class GoogleMeetUIMethods:
 
             if is_element_at_endpoint:
                 break
+
+            # A stretched path is aimed at a fixed point in the rect, so re-running the search
+            # would test the identical endpoint. Give up now instead of spending the remaining
+            # attempts -- and raise the retryable type, so this keeps the retry budget the plain
+            # dead end has always had rather than the bare RuntimeError's.
+            if used_stretched_path:
+                self.number_of_times_mocap_sequence_not_available += 1
+                raise UiMocapSequenceNotAvailableException(f"Stretched mocap path for rect [({rect_left},{rect_top})-({rect_right},{rect_bottom})] did not land on the target element (dead end #{self.number_of_times_mocap_sequence_not_available} for this bot)")
 
             logger.info(f"humanized interaction: endpoint page coords ({endpoint_page_x:.1f}, {endpoint_page_y:.1f}) not on target element, retrying (attempt {attempt + 1}/{num_seq_attempts})")
         else:
