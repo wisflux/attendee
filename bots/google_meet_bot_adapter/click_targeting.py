@@ -29,6 +29,16 @@ def axis_inset(span: float) -> float:
     return max(0.0, min(span * CLICK_TARGET_INSET_RATIO, MAX_CLICK_TARGET_INSET_PX, largest_inset_that_keeps_min_span))
 
 
+def is_rect_centre(x: int, y: int, rect_left: int, rect_top: int, rect_right: int, rect_bottom: int) -> bool:
+    """True when (x, y) is the exact centre of the rect.
+
+    ``MocapManager._center_landing_fallback`` -- the last resort of the stretch/rotate search --
+    always aims at this point, so an endpoint landing here means another search would test the
+    identical spot. Mirrors that function's own rounding.
+    """
+    return (x, y) == (round((rect_left + rect_right) / 2.0), round((rect_top + rect_bottom) / 2.0))
+
+
 def compute_click_target_rect(left: float, top: float, width: float, height: float, screen_x: float, screen_y: float, dpr: float) -> tuple[int, int, int, int]:
     """Map an element's CSS bounding box to the monitor-space rect the mouse should land in.
 

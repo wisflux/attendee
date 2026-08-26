@@ -4,6 +4,7 @@ from bots.google_meet_bot_adapter.click_targeting import (
     MIN_CLICK_TARGET_SPAN_PX,
     axis_inset,
     compute_click_target_rect,
+    is_rect_centre,
 )
 from bots.google_meet_bot_adapter.mocap_manager import MocapManager
 
@@ -131,3 +132,26 @@ class TestRealMeetTargetsKeepEnoughMocapPaths(SimpleTestCase):
 
     def test_camera_button_target_keeps_enough_paths(self):
         self._assert_target_reachable(CAMERA_BUTTON_MOUSE_AT, CAMERA_BUTTON_RECT)
+
+
+class TestIsRectCentre(SimpleTestCase):
+    """The mocap manager's last-resort path always aims at the rect centre.
+
+    Landing there means a further stretched search would test the identical point, so the
+    caller stops instead of spending its budget. Rounding must match
+    MocapManager._center_landing_fallback exactly or the check silently never fires.
+    """
+
+    def test_detects_the_exact_centre_of_an_even_rect(self):
+        self.assertTrue(is_rect_centre(20, 30, 10, 20, 30, 40))
+
+    def test_detects_the_rounded_centre_of_an_odd_rect(self):
+        # (10+15)/2 = 12.5 -> banker's rounding gives 12, matching _center_landing_fallback.
+        self.assertTrue(is_rect_centre(round(12.5), round(22.5), 10, 20, 15, 25))
+
+    def test_rejects_a_point_one_pixel_off_centre(self):
+        self.assertFalse(is_rect_centre(21, 30, 10, 20, 30, 40))
+        self.assertFalse(is_rect_centre(20, 31, 10, 20, 30, 40))
+
+    def test_rejects_a_point_elsewhere_inside_the_rect(self):
+        self.assertFalse(is_rect_centre(12, 22, 10, 20, 30, 40))

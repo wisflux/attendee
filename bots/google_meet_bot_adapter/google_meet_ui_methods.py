@@ -22,10 +22,15 @@ from bots.google_meet_bot_adapter.okta_authenticator import OktaAuthenticator, O
 from bots.models import RecordingViews
 from bots.web_bot_adapter.ui_methods import UiCouldNotClickElementException, UiCouldNotJoinMeetingWaitingForHostException, UiCouldNotJoinMeetingWaitingRoomTimeoutException, UiCouldNotLocateElementException, UiLoginAttemptFailedException, UiLoginRequiredException, UiMeetingNotFoundException, UiRequestToJoinDeniedException, UiRetryableExpectedException
 
-from .click_targeting import compute_click_target_rect
+from .click_targeting import compute_click_target_rect, is_rect_centre
 from .mocap_manager import MocapManager
 
 logger = logging.getLogger(__name__)
+
+# How many stretched/rotated mocap paths to try before giving up on an element. The search is
+# randomised so retrying can land elsewhere, but each call costs roughly a second, so a browser
+# restart becomes cheaper than burning the full attempt budget on it.
+MAX_STRETCHED_PATH_ATTEMPTS = 3
 
 
 class UiGoogleBlockingUsException(UiRetryableExpectedException):
@@ -385,6 +390,7 @@ class GoogleMeetUIMethods:
 
         seq = None
         used_stretched_path = False
+        stretched_attempts = 0
         num_seq_attempts = 10
         for attempt in range(num_seq_attempts):
             seq = self.mocap_manager.find_random_sequence_landing_in_rect(current_x, current_y, rect_left, rect_top, rect_right, rect_bottom)
@@ -394,7 +400,7 @@ class GoogleMeetUIMethods:
             # a fresh browser -- per dead end before the fallback was allowed to run.
             # Nothing feeding the search above changes between attempts (the mouse does not move
             # until the path is replayed), so a miss on one attempt is a miss on all of them:
-            # run this comparatively expensive search once, never once per attempt.
+            # run the comparatively expensive stretched search on a small budget, not once per attempt.
             if seq is None:
                 logger.warning(f"No mocap sequence lands inside clickable rect from ({current_x},{current_y}) to [({rect_left},{rect_top})-({rect_right},{rect_bottom})]. Stretching and rotating the mocap path to fit the desired endpoint.")
                 seq = self.mocap_manager.find_random_sequence_landing_in_rect_with_stretch_and_rotation_allowed(current_x, current_y, rect_left, rect_top, rect_right, rect_bottom)
@@ -424,13 +430,20 @@ class GoogleMeetUIMethods:
             if is_element_at_endpoint:
                 break
 
-            # A stretched path is aimed at a fixed point in the rect, so re-running the search
-            # would test the identical endpoint. Give up now instead of spending the remaining
-            # attempts -- and raise the retryable type, so this keeps the retry budget the plain
-            # dead end has always had rather than the bare RuntimeError's.
+            # The stretched search shuffles its source sequences and picks randomly among the
+            # matches, so a second call really can land somewhere else -- retrying is worth a few
+            # goes, just not all ten at ~1s each. The one exception is its last-resort path, which
+            # aims at the exact centre of the rect: landing there means another call would test
+            # the identical point, so stop immediately.
             if used_stretched_path:
-                self.number_of_times_mocap_sequence_not_available += 1
-                raise UiMocapSequenceNotAvailableException(f"Stretched mocap path for rect [({rect_left},{rect_top})-({rect_right},{rect_bottom})] did not land on the target element (dead end #{self.number_of_times_mocap_sequence_not_available} for this bot)")
+                stretched_attempts += 1
+                aimed_at_rect_centre = is_rect_centre(endpoint_monitor_x, endpoint_monitor_y, rect_left, rect_top, rect_right, rect_bottom)
+                if aimed_at_rect_centre or stretched_attempts >= MAX_STRETCHED_PATH_ATTEMPTS:
+                    self.number_of_times_mocap_sequence_not_available += 1
+                    # Raise the retryable type, so this keeps the retry budget the plain dead end
+                    # has always had rather than the bare RuntimeError's.
+                    raise UiMocapSequenceNotAvailableException(f"Stretched mocap path for rect [({rect_left},{rect_top})-({rect_right},{rect_bottom})] did not land on the target element after {stretched_attempts} attempt(s){' (aimed at rect centre, so further attempts would repeat it)' if aimed_at_rect_centre else ''} (dead end #{self.number_of_times_mocap_sequence_not_available} for this bot)")
+                used_stretched_path = False
 
             logger.info(f"humanized interaction: endpoint page coords ({endpoint_page_x:.1f}, {endpoint_page_y:.1f}) not on target element, retrying (attempt {attempt + 1}/{num_seq_attempts})")
         else:
