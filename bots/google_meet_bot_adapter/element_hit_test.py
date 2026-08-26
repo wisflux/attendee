@@ -26,12 +26,21 @@ MAX_STALE_RELOCATE_ATTEMPTS = 3
 
 # `isConnected` is checked FIRST: a detached node can still sit under elementFromPoint's answer,
 # so the hit comparison alone cannot tell staleness from being covered.
-HIT_TEST_JS = """
+HIT_TEST_JS = r"""
     var expected = arguments[2];
-    if (expected && expected.isConnected === false) { return 'stale'; }
+    if (expected && expected.isConnected === false) { return {result: 'stale', blocker: null}; }
     var el = document.elementFromPoint(arguments[0], arguments[1]);
-    if (el && (el === expected || expected.contains(el))) { return 'hit'; }
-    return 'covered';
+    if (el && (el === expected || expected.contains(el))) { return {result: 'hit', blocker: null}; }
+    var describe = function (n) {
+        if (!n) { return 'null'; }
+        var cls = (typeof n.className === 'string' && n.className.trim()) ? '.' + n.className.trim().split(/\s+/).slice(0, 2).join('.') : '';
+        var box = n.getBoundingClientRect();
+        var style = window.getComputedStyle(n);
+        return n.tagName.toLowerCase() + cls
+            + ' [' + Math.round(box.width) + 'x' + Math.round(box.height)
+            + ' ' + style.position + ' z=' + style.zIndex + ']';
+    };
+    return {result: 'covered', blocker: describe(el)};
 """
 
 
@@ -52,14 +61,24 @@ def relocation_is_enabled() -> bool:
     return os.getenv("MEET_RELOCATE_REPLACED_ELEMENTS", "true").strip().lower() != "false"
 
 
-def classify_hit_test_result(raw_result) -> str:
-    """Map the raw value from HIT_TEST_JS to one of HIT / STALE / COVERED.
+def classify_hit_test_result(raw_result) -> tuple[str, str | None]:
+    """Map the raw value from HIT_TEST_JS to ``(result, blocker_description)``.
 
-    Anything unrecognised -- including the legacy boolean, or None from a driver hiccup -- is
-    treated as COVERED, which preserves the original behaviour of trying another mouse path.
+    `blocker_description` names whatever `elementFromPoint` returned instead of the target, so a
+    production log says *what* is on top rather than only that the aim missed. It is None unless
+    the result is COVERED.
+
+    Anything unrecognised -- including the legacy boolean or a plain string from an older injected
+    script, or None from a driver hiccup -- is treated as COVERED, which preserves the original
+    behaviour of trying another mouse path.
     """
     if raw_result is True:
-        return HIT
+        return HIT, None
+    if isinstance(raw_result, dict):
+        result = raw_result.get("result")
+        if result in (HIT, STALE, COVERED):
+            return result, raw_result.get("blocker")
+        return COVERED, raw_result.get("blocker")
     if raw_result in (HIT, STALE, COVERED):
-        return raw_result
-    return COVERED
+        return raw_result, None
+    return COVERED, None

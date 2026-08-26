@@ -445,7 +445,7 @@ class GoogleMeetUIMethods:
             endpoint_page_x = endpoint_monitor_x / dpr - screen_x
             endpoint_page_y = endpoint_monitor_y / dpr - screen_y
 
-            hit_test_result = classify_hit_test_result(
+            hit_test_result, blocking_element = classify_hit_test_result(
                 self.driver.execute_script(
                     HIT_TEST_JS,
                     endpoint_page_x,
@@ -462,9 +462,12 @@ class GoogleMeetUIMethods:
             if hit_test_result == STALE:
                 raise ElementReplacedError("Target element is no longer in the document")
 
-            logger.info(f"humanized interaction: endpoint page coords ({endpoint_page_x:.1f}, {endpoint_page_y:.1f}) not on target element, retrying (attempt {attempt + 1}/{num_seq_attempts})")
+            # Name what is on top, not just that we missed: a full-viewport overlay (a Meet modal
+            # scrim, for instance) blocks every point on screen, so no mouse path can ever succeed
+            # and the aim was never the problem. Without this the logs cannot tell the two apart.
+            logger.info(f"humanized interaction: endpoint page coords ({endpoint_page_x:.1f}, {endpoint_page_y:.1f}) not on target element -- blocked by {blocking_element}, retrying (attempt {attempt + 1}/{num_seq_attempts})")
         else:
-            raise RuntimeError(f"Could not find mocap sequence landing on target element after {num_seq_attempts} attempts")
+            raise RuntimeError(f"Could not find mocap sequence landing on target element after {num_seq_attempts} attempts (last blocked by {blocking_element})")
 
         logger.info(f"humanized interaction: selected sequence with {len(seq.movements)} movements, total_dx={seq.total_dx}, total_dy={seq.total_dy}")
 

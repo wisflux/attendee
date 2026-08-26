@@ -18,18 +18,18 @@ from bots.google_meet_bot_adapter.google_meet_ui_methods import GoogleMeetUIMeth
 
 class TestClassifyHitTestResult(SimpleTestCase):
     def test_passes_through_the_three_known_codes(self):
-        self.assertEqual(classify_hit_test_result("hit"), HIT)
-        self.assertEqual(classify_hit_test_result("stale"), STALE)
-        self.assertEqual(classify_hit_test_result("covered"), COVERED)
+        self.assertEqual(classify_hit_test_result("hit"), (HIT, None))
+        self.assertEqual(classify_hit_test_result("stale"), (STALE, None))
+        self.assertEqual(classify_hit_test_result("covered"), (COVERED, None))
 
     def test_treats_the_legacy_boolean_true_as_a_hit(self):
         # An older injected script, or a mixed deploy, must not be read as a miss.
-        self.assertEqual(classify_hit_test_result(True), HIT)
+        self.assertEqual(classify_hit_test_result(True), (HIT, None))
 
     def test_falls_back_to_covered_for_anything_unrecognised(self):
         # COVERED preserves the original behaviour: try another mouse path.
         for raw in (False, None, "", "something-else", 0, 1, [], {}):
-            self.assertEqual(classify_hit_test_result(raw), COVERED, f"unexpected classification for {raw!r}")
+            self.assertEqual(classify_hit_test_result(raw), (COVERED, None), f"unexpected classification for {raw!r}")
 
 
 class TestHitTestJs(SimpleTestCase):
@@ -41,6 +41,25 @@ class TestHitTestJs(SimpleTestCase):
     def test_returns_the_codes_the_classifier_knows(self):
         for code in (HIT, STALE, COVERED):
             self.assertIn(f"'{code}'", HIT_TEST_JS)
+
+    def test_reports_the_blocking_element(self):
+        # The whole point of the diagnostic: a log must be able to say WHAT was on top.
+        self.assertIn("blocker", HIT_TEST_JS)
+        self.assertIn("elementFromPoint", HIT_TEST_JS)
+
+
+class TestClassifierReadsTheBlocker(SimpleTestCase):
+    def test_extracts_the_blocker_from_a_covered_result(self):
+        raw = {"result": "covered", "blocker": "div.uW2Fw-IE5DDf [1920x1080 fixed z=-1]"}
+        self.assertEqual(classify_hit_test_result(raw), (COVERED, "div.uW2Fw-IE5DDf [1920x1080 fixed z=-1]"))
+
+    def test_hit_and_stale_carry_no_blocker(self):
+        self.assertEqual(classify_hit_test_result({"result": "hit", "blocker": None}), (HIT, None))
+        self.assertEqual(classify_hit_test_result({"result": "stale", "blocker": None}), (STALE, None))
+
+    def test_an_unknown_result_in_a_dict_still_keeps_the_blocker(self):
+        raw = {"result": "something-new", "blocker": "div.mystery"}
+        self.assertEqual(classify_hit_test_result(raw), (COVERED, "div.mystery"))
 
 
 class TestHumanizedClickRelocatesReplacedElements(SimpleTestCase):
