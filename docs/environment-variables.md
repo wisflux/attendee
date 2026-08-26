@@ -157,6 +157,7 @@ This document lists all supported environment variables for the Attendee applica
 | `WEBPAGE_STREAMER_POD_NAMESPACE` | String | `attendee-webpage-streamer` | Kubernetes namespace for webpage streamer pods. |
 | `CHARGE_CREDITS_FOR_BOTS` | Boolean | `false` | Enable credit charging for bot operations. |
 | `CUSTOM_BOT_POD_SPEC_TYPES` | String | (Empty) | Comma-separated list of custom bot pod specification types. |
+| `MEET_RELOCATE_REPLACED_ELEMENTS` | Boolean | `true` | When `true`, a Google Meet bot re-fetches a pre-join element that the page replaced mid-click instead of restarting the browser. Set to `false` to restore the previous behaviour. |
 | `ENFORCE_DOMAIN_ALLOWLIST_IN_CHROME` | Boolean | `false` | Enforce domain allowlist in Chrome web bot. |
 | `MASK_TRANSCRIPT_IN_LOGS` | Boolean | `false` | Mask transcript content in application logs for privacy. |
 

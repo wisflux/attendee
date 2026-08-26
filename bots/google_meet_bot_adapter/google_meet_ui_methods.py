@@ -22,9 +22,14 @@ from bots.google_meet_bot_adapter.okta_authenticator import OktaAuthenticator, O
 from bots.models import RecordingViews
 from bots.web_bot_adapter.ui_methods import UiCouldNotClickElementException, UiCouldNotJoinMeetingWaitingForHostException, UiCouldNotJoinMeetingWaitingRoomTimeoutException, UiCouldNotLocateElementException, UiLoginAttemptFailedException, UiLoginRequiredException, UiMeetingNotFoundException, UiRequestToJoinDeniedException, UiRetryableExpectedException
 
+from .element_hit_test import HIT, HIT_TEST_JS, MAX_STALE_RELOCATE_ATTEMPTS, STALE, ElementReplacedError, classify_hit_test_result, relocation_is_enabled
 from .mocap_manager import MocapManager
 
 logger = logging.getLogger(__name__)
+
+# Waits reused by both the initial lookup of a media button and its re-fetch after a re-render.
+MEDIA_BUTTON_WAIT_SECONDS = 6
+JOIN_BUTTON_WAIT_SECONDS = 60
 
 
 class UiGoogleBlockingUsException(UiRetryableExpectedException):
@@ -182,11 +187,11 @@ class GoogleMeetUIMethods:
             microphone_button = self.locate_element(
                 step="turn_off_microphone_button",
                 condition=EC.element_to_be_clickable((By.CSS_SELECTOR, MICROPHONE_BUTTON_SELECTOR)),
-                wait_time_seconds=6,
+                wait_time_seconds=MEDIA_BUTTON_WAIT_SECONDS,
             )
             logger.info("Clicking the microphone button...")
             if self.ui_interaction_mode == "humanized":
-                self.humanized_navigate_to_and_click_element(microphone_button)
+                self.humanized_navigate_to_and_click_element(microphone_button, relocate=lambda: self.locate_element(step="turn_off_microphone_button", condition=EC.element_to_be_clickable((By.CSS_SELECTOR, MICROPHONE_BUTTON_SELECTOR)), wait_time_seconds=MEDIA_BUTTON_WAIT_SECONDS))
             else:
                 self.click_element(microphone_button, "turn_off_microphone_button")
 
@@ -206,11 +211,11 @@ class GoogleMeetUIMethods:
             camera_button = self.locate_element(
                 step="turn_off_camera_button",
                 condition=EC.element_to_be_clickable((By.CSS_SELECTOR, CAMERA_BUTTON_SELECTOR)),
-                wait_time_seconds=6,
+                wait_time_seconds=MEDIA_BUTTON_WAIT_SECONDS,
             )
             logger.info("Clicking the camera button...")
             if self.ui_interaction_mode == "humanized":
-                self.humanized_navigate_to_and_click_element(camera_button)
+                self.humanized_navigate_to_and_click_element(camera_button, relocate=lambda: self.locate_element(step="turn_off_camera_button", condition=EC.element_to_be_clickable((By.CSS_SELECTOR, CAMERA_BUTTON_SELECTOR)), wait_time_seconds=MEDIA_BUTTON_WAIT_SECONDS))
             else:
                 self.click_element(camera_button, "turn_off_camera_button")
 
@@ -337,7 +342,28 @@ class GoogleMeetUIMethods:
         if not hasattr(self, "mocap_manager"):
             self.mocap_manager = MocapManager(video_frame_size=self.video_frame_size)
 
-    def humanized_navigate_to_and_click_element(self, element):
+    def humanized_navigate_to_and_click_element(self, element, relocate=None):
+        """Move the mouse to `element` along a recorded human path and click it.
+
+        Google Meet re-renders the pre-join screen while the journey is in flight, replacing the
+        target with an identical new node and leaving our handle detached. `relocate` is called to
+        fetch a fresh handle when that happens, instead of reporting a hopeless "no path worked"
+        and costing a whole browser restart. Callers that pass nothing keep the old behaviour.
+        """
+        for stale_attempt in range(MAX_STALE_RELOCATE_ATTEMPTS):
+            try:
+                return self._humanized_click_attempt(element)
+            except ElementReplacedError:
+                if relocate is None or not relocation_is_enabled():
+                    raise StaleElementReferenceException("Target element was replaced during the humanized click and could not be re-fetched")
+                logger.info(f"humanized interaction: target element was replaced mid-click, re-fetching it (attempt {stale_attempt + 1}/{MAX_STALE_RELOCATE_ATTEMPTS})")
+                relocated_element = relocate()
+                if relocated_element is None:
+                    raise StaleElementReferenceException("Target element was replaced during the humanized click and the re-fetch returned nothing")
+                element = relocated_element
+        raise StaleElementReferenceException(f"Target element was replaced during the humanized click {MAX_STALE_RELOCATE_ATTEMPTS} times in a row")
+
+    def _humanized_click_attempt(self, element):
         self.ensure_x11_input()
         self.ensure_mocap_manager()
 
@@ -352,7 +378,8 @@ class GoogleMeetUIMethods:
                 height: r.height,
                 screenX: window.screenX,
                 screenY: window.screenY,
-                dpr: window.devicePixelRatio || 1
+                dpr: window.devicePixelRatio || 1,
+                isConnected: el.isConnected !== false
             };
             """,
             element,
@@ -368,6 +395,13 @@ class GoogleMeetUIMethods:
         screen_x = float(metrics["screenX"])
         screen_y = float(metrics["screenY"])
         dpr = float(metrics["dpr"])
+
+        # The element can be replaced before we even measure it, not only mid-journey. A detached
+        # node reports 0x0, so without this the caller would see an unrecoverable RuntimeError
+        # instead of simply re-fetching. A connected-but-zero-sized element is a different problem
+        # and keeps its original error.
+        if not metrics.get("isConnected", True):
+            raise ElementReplacedError("Target element was already replaced before it could be measured")
 
         if width <= 0 or height <= 0:
             raise RuntimeError(f"Element has invalid size: {width}x{height}")
@@ -411,19 +445,22 @@ class GoogleMeetUIMethods:
             endpoint_page_x = endpoint_monitor_x / dpr - screen_x
             endpoint_page_y = endpoint_monitor_y / dpr - screen_y
 
-            is_element_at_endpoint = self.driver.execute_script(
-                """
-                var el = document.elementFromPoint(arguments[0], arguments[1]);
-                var expected = arguments[2];
-                return !!el && (el === expected || expected.contains(el));
-                """,
-                endpoint_page_x,
-                endpoint_page_y,
-                element,
+            hit_test_result = classify_hit_test_result(
+                self.driver.execute_script(
+                    HIT_TEST_JS,
+                    endpoint_page_x,
+                    endpoint_page_y,
+                    element,
+                )
             )
 
-            if is_element_at_endpoint:
+            if hit_test_result == HIT:
                 break
+
+            # A replaced element can never be hit, however many paths we try: the comparison is
+            # against a node that has left the document. Stop and let the caller re-fetch it.
+            if hit_test_result == STALE:
+                raise ElementReplacedError("Target element is no longer in the document")
 
             logger.info(f"humanized interaction: endpoint page coords ({endpoint_page_x:.1f}, {endpoint_page_y:.1f}) not on target element, retrying (attempt {attempt + 1}/{num_seq_attempts})")
         else:
@@ -457,7 +494,7 @@ class GoogleMeetUIMethods:
                 self.check_for_failed_logged_in_bot_attempt()
                 logger.info("name input found")
                 if self.ui_interaction_mode == "humanized":
-                    self.humanized_navigate_to_and_click_element(name_input)
+                    self.humanized_navigate_to_and_click_element(name_input, relocate=self.retrieve_name_input_element)
                     logger.info("Name input clicked")
                     self.human_copy_and_paste(self.display_name)
                     logger.info("Name input filled out")
@@ -1138,11 +1175,11 @@ class GoogleMeetUIMethods:
         join_button = self.locate_element(
             step="join_button",
             condition=EC.presence_of_element_located((By.XPATH, self.join_now_button_selector())),
-            wait_time_seconds=60,
+            wait_time_seconds=JOIN_BUTTON_WAIT_SECONDS,
         )
         logger.info("Clicking the join button...")
         if self.ui_interaction_mode == "humanized":
-            self.humanized_navigate_to_and_click_element(join_button)
+            self.humanized_navigate_to_and_click_element(join_button, relocate=lambda: self.locate_element(step="join_button", condition=EC.presence_of_element_located((By.XPATH, self.join_now_button_selector())), wait_time_seconds=JOIN_BUTTON_WAIT_SECONDS))
         else:
             self.click_element(join_button, "join_button")
 
