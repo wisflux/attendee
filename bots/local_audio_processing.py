@@ -1,14 +1,13 @@
 """Turning a local session's glued audio into utterances, reusing the bots' VAD.
 
-This is the same webrtcVAD + utterance segmentation meeting bots use, with two local-only
-adjustments: a loudness meter that does not overflow, and driving the VAD on the session's
-own timeline (offsets) rather than the wall clock.
+This is the same webrtcVAD + utterance segmentation meeting bots use, with one local-only
+adjustment: the VAD is driven on the session's own timeline (offsets) rather than the wall
+clock. The loudness workaround that used to live here is gone -- the shared
+calculate_normalized_rms() is correct now, so the base class already does the right thing.
 """
 
 import logging
 from datetime import timedelta
-
-import numpy as np
 
 from bots.bot_controller.per_participant_non_streaming_audio_input_manager import (
     PerParticipantNonStreamingAudioInputManager,
@@ -28,42 +27,16 @@ LOCAL_UTTERANCE_SIZE_LIMIT_SECONDS = 30
 # supported rate, which is also what the bot adapters happen to emit.
 VAD_FRAME_MS = 10
 BYTES_PER_SAMPLE = 2
-INT16_FULL_SCALE = 32768.0
-
-
-def normalized_rms(audio_bytes):
-    """Loudness of a PCM frame, 0..1.
-
-    The shared calculate_normalized_rms() squares an int16 array *in int16*, which wraps for
-    any |sample| > 181 -- i.e. for all real speech -- so loud audio measures as silence.
-    Widening to float64 first is what the streaming manager already does.
-    """
-    samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float64)
-    if samples.size == 0:
-        return 0.0
-    return float(np.sqrt(np.mean(np.square(samples))) / INT16_FULL_SCALE)
 
 
 class LocalAudioInputManager(PerParticipantNonStreamingAudioInputManager):
-    """The bots' VAD manager, but with a loudness meter that does not overflow.
+    """The bots' VAD manager, used as-is.
 
-    Only ``silence_detected`` is overridden, and only to swap in the corrected RMS. The
-    shared function is deliberately left alone so the bot path stays byte-identical; fixing
-    it there is worth doing, but as its own change with its own testing.
+    This subclass used to override ``silence_detected`` purely to swap in a loudness meter
+    that did not overflow. That fix now lives in ``bots.audio_utils`` and the base class uses
+    it, so the override is gone. The class is kept as the named seam for local-only VAD
+    behaviour, which the segmentation work will use.
     """
-
-    def silence_detected(self, chunk_bytes):
-        rms_value = normalized_rms(chunk_bytes)
-        if rms_value == 0:
-            self.diagnostic_info["total_chunks_marked_as_silent_due_to_rms_being_zero"] += 1
-            return True
-        if rms_value < 0.01:
-            self.diagnostic_info["total_chunks_marked_as_silent_due_to_rms_being_small"] += 1
-            return True
-        if not self.is_speech(chunk_bytes):
-            self.diagnostic_info["total_chunks_marked_as_silent_due_to_vad"] += 1
-            return True
-        return False
 
 
 def duration_ms(audio, sample_rate):

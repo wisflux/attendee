@@ -3,17 +3,14 @@ import queue
 import time
 from datetime import datetime, timedelta
 
-import numpy as np
 import webrtcvad
+
+from bots.audio_utils import calculate_normalized_rms
 
 logger = logging.getLogger(__name__)
 
-
-def calculate_normalized_rms(audio_bytes):
-    samples = np.frombuffer(audio_bytes, dtype=np.int16)
-    rms = np.sqrt(np.mean(np.square(samples)))
-    # Normalize by max possible value for 16-bit audio (32768)
-    return rms / 32768
+# A frame quieter than this is treated as silence without consulting the VAD.
+SILENCE_RMS_THRESHOLD = 0.01
 
 
 class PerParticipantNonStreamingAudioInputManager:
@@ -95,7 +92,7 @@ class PerParticipantNonStreamingAudioInputManager:
         if rms_value == 0:
             self.diagnostic_info["total_chunks_marked_as_silent_due_to_rms_being_zero"] += 1
             return True
-        if rms_value < 0.01:
+        if rms_value < SILENCE_RMS_THRESHOLD:
             self.diagnostic_info["total_chunks_marked_as_silent_due_to_rms_being_small"] += 1
             return True
         if not self.is_speech(chunk_bytes):

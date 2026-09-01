@@ -1,9 +1,9 @@
 import logging
 import time
 
-import numpy as np
 import webrtcvad
 
+from bots.audio_utils import calculate_normalized_rms
 from bots.models import (
     Credentials,
     TranscriptionProviders,
@@ -19,37 +19,8 @@ from bots.transcription_providers.utterance_handler import DefaultUtteranceHandl
 logger = logging.getLogger(__name__)
 
 
-def calculate_normalized_rms(audio_bytes):
-    if not audio_bytes or len(audio_bytes) < 2:
-        return 0.0
-
-    try:
-        samples = np.frombuffer(audio_bytes, dtype=np.int16)
-        if len(samples) == 0:
-            return 0.0
-
-        # Check for any NaN or infinite values in samples
-        if not np.isfinite(samples).all():
-            return 0.0
-
-        # Calculate mean of squares first
-        mean_square = np.mean(np.square(samples.astype(np.float64)))
-
-        # Check if mean_square is valid before sqrt
-        if not np.isfinite(mean_square) or mean_square < 0:
-            return 0.0
-
-        rms = np.sqrt(mean_square)
-
-        # Handle NaN case (shouldn't happen with valid data, but be safe)
-        if not np.isfinite(rms):
-            return 0.0
-
-        # Normalize by max possible value for 16-bit audio (32768)
-        return rms / 32768
-    except (ValueError, TypeError, BufferError, FloatingPointError):
-        # If there's any issue with the audio data, treat as silence
-        return 0.0
+# Kyutai is sent audio over the network, so pure digital silence is filtered out first.
+STREAMING_SILENCE_RMS_THRESHOLD = 0.0025
 
 
 class PerParticipantStreamingAudioInputManager:
@@ -83,7 +54,7 @@ class PerParticipantStreamingAudioInputManager:
         self.utterance_handler = DefaultUtteranceHandler(bot=bot, get_participant_callback=get_participant_callback, sample_rate=sample_rate)
 
     def silence_detected(self, chunk_bytes):
-        if calculate_normalized_rms(chunk_bytes) < 0.0025:
+        if calculate_normalized_rms(chunk_bytes) < STREAMING_SILENCE_RMS_THRESHOLD:
             return True
         return not self.vad.is_speech(chunk_bytes, self.sample_rate)
 
