@@ -179,3 +179,29 @@ class UnsupportedInputTests(SimpleTestCase):
         vad.is_speech("a", frame_bytes(16000), 16000)
         with patch.object(silero_vad, "_get_session", side_effect=RuntimeError("one bad chunk")):
             self.assertTrue(vad.is_speech("a", frame_bytes(16000), 16000))
+
+
+class InitialDecisionTests(SimpleTestCase):
+    """A fresh stream must not claim speech before it has evaluated a window.
+
+    The stream is reset at every utterance flush, so an optimistic initial decision re-arms on
+    every non-speech stretch and emits a short clip each time -- the offline harness measured
+    three spurious utterances from a single steady tone.
+    """
+
+    def test_a_fresh_stream_reports_silence_before_its_first_window(self):
+        stream = _SpeakerStream(16000)
+        self.assertFalse(stream.is_speech(b""), "claimed speech with no audio at all")
+
+    def test_a_tone_produces_no_speech_even_across_resets(self):
+        vad = SileroVoiceActivityDetector()
+        n = 16000 * FRAME_MS // 1000
+        amplitude = (10 ** (SPEECH_DBFS / 20)) * 32767
+        decisions = []
+        for i in range(60):
+            if i % 20 == 0:
+                vad.reset("s")  # what the manager does when an utterance flushes
+            t = (np.arange(n) + i * n) / 16000
+            tone = (amplitude * np.sin(2 * np.pi * 440 * t)).astype(np.int16).tobytes()
+            decisions.append(vad.is_speech("s", tone, 16000))
+        self.assertFalse(any(decisions), "a reset re-armed an optimistic guess on non-speech")

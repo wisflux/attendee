@@ -78,6 +78,16 @@ def assert_only_threads_created_connections(testcase, events, allowed_thread_ide
 
 
 @tag("google_meet_tests")
+class _AlwaysSpeechDetector:
+    """Stands in for the VAD when a test feeds synthetic audio a speech model would reject."""
+
+    def is_speech(self, speaker_id, chunk_bytes, sample_rate):
+        return True
+
+    def reset(self, speaker_id):
+        pass
+
+
 class TestGoogleMeetBot(TransactionTestCase):
     @classmethod
     def setUpClass(cls):
@@ -255,6 +265,15 @@ class TestGoogleMeetBot(TransactionTestCase):
 
             # Convert float to PCM int16
             pcm_data = (audio_data * 32768.0).astype(np.int16).tobytes()
+
+            # The fixture above is a 440Hz sine tone, not speech. webrtcvad accepted it because
+            # it scores band energy, but Silero is a speech model and correctly reports 0%
+            # speech for a pure tone at every level -- so with a real detector this audio
+            # produces no utterances at all. This test is about the bot lifecycle and that the
+            # transcription provider gets called, not about the VAD, so the detector is stubbed
+            # to accept the fixture. VAD behaviour is covered in bots/tests/test_silero_vad.py
+            # and compared against webrtcvad on real audio by bots/e2e_tests/vad_offline_compare.py.
+            controller.per_participant_non_streaming_audio_input_manager.vad = _AlwaysSpeechDetector()
 
             # Send audio chunk as if it came from the participant
             controller.per_participant_non_streaming_audio_input_manager.add_chunk("user1", datetime.datetime.utcnow(), pcm_data)

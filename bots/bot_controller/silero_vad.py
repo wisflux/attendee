@@ -88,9 +88,13 @@ class _SpeakerStream:
         self._buffer = np.empty(0, dtype=np.float32)
         self._state = np.zeros(_STATE_SHAPE, dtype=np.float32)
         self._context = np.zeros(_CONTEXT_SAMPLES, dtype=np.float32)
-        # Fail open until 512 samples have accumulated: a false 'speech' costs one padded
-        # frame, a false 'silence' costs the first word of an utterance.
-        self._last_is_speech = True
+        # Report silence until a real window has been evaluated, which takes 40 ms of audio
+        # at 10 ms frames. Guessing "speech" instead manufactures an utterance out of nothing:
+        # the stream is reset at every flush, so a non-speech stretch would re-arm the guess
+        # and emit a fresh ~230 ms clip each time round -- measured, and exactly the shape that
+        # makes a transcription model invent text. The cost of this direction is bounded and
+        # small: at most 40 ms of onset before the first window can speak for itself.
+        self._last_is_speech = False
 
     def is_speech(self, chunk_bytes):
         self._buffer = np.concatenate((self._buffer, self._to_target_rate(chunk_bytes)))
