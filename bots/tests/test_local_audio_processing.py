@@ -157,3 +157,65 @@ class DurationTests(SimpleTestCase):
     def test_frames_helper_matches_the_feed_step(self):
         self.assertEqual(len(frames_of(silence(100))), 10)
         self.assertEqual(len(np.frombuffer(silence(10), dtype=np.int16)), SAMPLE_RATE * VAD_FRAME_MS // 1000)
+
+
+class TrailingSilenceTrimTests(SimpleTestCase):
+    """An utterance always ends with the full silence limit, because that is the flush
+    condition. Measured at ~30% of a typical clip and up to 80% of a short one -- and dead air
+    is what a transcription model fills with invented text."""
+
+    def emit(self, params, audio, voiced_end_bytes):
+        manager, emitted = build(params)
+        manager._voiced_ms = 1000.0
+        manager._voiced_end_bytes = voiced_end_bytes
+        manager.save_audio_chunk_callback({"audio_data": audio, "timestamp_ms": 0})
+        return emitted[0]["audio_data"] if emitted else None
+
+    def test_trailing_silence_is_cut_back_to_the_keep_margin(self):
+        speech_bytes = len(silence(500))
+        audio = silence(500) + silence(2000)
+        kept = self.emit(LocalVadParams(trailing_keep_ms=200), audio, speech_bytes)
+        self.assertEqual(duration_ms(kept, SAMPLE_RATE), 700)
+
+    def test_a_zero_margin_cuts_to_the_last_voiced_sample(self):
+        speech_bytes = len(silence(500))
+        kept = self.emit(LocalVadParams(trailing_keep_ms=0), silence(500) + silence(2000), speech_bytes)
+        self.assertEqual(duration_ms(kept, SAMPLE_RATE), 500)
+
+    def test_silence_inside_the_utterance_is_preserved(self):
+        """Internal pauses carry timing the transcript depends on."""
+        audio = silence(400) + silence(600) + silence(400) + silence(2000)
+        voiced_end = len(silence(1400))  # speech ended after the internal pause
+        kept = self.emit(LocalVadParams(trailing_keep_ms=200), audio, voiced_end)
+        self.assertEqual(duration_ms(kept, SAMPLE_RATE), 1600)
+
+    def test_an_utterance_with_no_voiced_audio_is_left_alone(self):
+        audio = silence(800)
+        self.assertEqual(self.emit(LocalVadParams(min_speech_ms=0), audio, 0), audio)
+
+    def test_a_margin_longer_than_the_tail_is_a_no_op(self):
+        audio = silence(500) + silence(100)
+        kept = self.emit(LocalVadParams(trailing_keep_ms=5000), audio, len(silence(500)))
+        self.assertEqual(kept, audio)
+
+    def test_the_result_is_always_a_whole_number_of_samples(self):
+        """An odd byte count is not decodable PCM16 and the upload endpoint rejects it."""
+        for keep_ms in (0, 1, 7, 33, 200):
+            with self.subTest(keep_ms=keep_ms):
+                kept = self.emit(LocalVadParams(trailing_keep_ms=keep_ms), silence(500) + silence(900), len(silence(500)) - 1)
+                self.assertEqual(len(kept) % BYTES_PER_SAMPLE, 0)
+
+    def test_trimming_never_lengthens_the_audio(self):
+        audio = silence(300) + silence(1500)
+        kept = self.emit(LocalVadParams(trailing_keep_ms=200), audio, len(silence(300)))
+        self.assertLessEqual(len(kept), len(audio))
+
+    def test_the_boundary_resets_between_utterances(self):
+        """A stale offset from the previous utterance would truncate the next one wrongly."""
+        manager, emitted = build(LocalVadParams(trailing_keep_ms=0))
+        manager._voiced_ms, manager._voiced_end_bytes = 1000.0, len(silence(100))
+        manager.save_audio_chunk_callback({"audio_data": silence(900), "timestamp_ms": 0})
+        manager._voiced_ms = 1000.0  # second utterance, no voiced boundary recorded
+        manager.save_audio_chunk_callback({"audio_data": silence(900), "timestamp_ms": 1})
+        self.assertEqual(duration_ms(emitted[0]["audio_data"], SAMPLE_RATE), 100)
+        self.assertEqual(duration_ms(emitted[1]["audio_data"], SAMPLE_RATE), 900, "the second utterance reused a stale boundary")

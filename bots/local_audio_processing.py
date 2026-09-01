@@ -47,6 +47,7 @@ class LocalAudioInputManager(PerParticipantNonStreamingAudioInputManager):
             hysteresis_offset=params.hysteresis_offset,
         )
         self._voiced_ms = 0.0
+        self._voiced_end_bytes = 0
         # Wrap rather than override process_chunk: the base decides when to flush, and this
         # only decides whether the flushed result is worth keeping.
         self._emit_utterance = self.save_audio_chunk_callback
@@ -56,14 +57,40 @@ class LocalAudioInputManager(PerParticipantNonStreamingAudioInputManager):
         is_silent = super().silence_detected(speaker_id, chunk_bytes)
         if not is_silent and chunk_bytes:
             self._voiced_ms += duration_ms(chunk_bytes, self.sample_rate)
+            # The base appends this frame straight after asking us, so the buffer's current
+            # length is exactly where the frame will start.
+            buffered = len(self.utterances.get(speaker_id, b""))
+            self._voiced_end_bytes = buffered + len(chunk_bytes)
         return is_silent
 
     def _emit_if_enough_speech(self, message):
         voiced_ms, self._voiced_ms = self._voiced_ms, 0.0
+        voiced_end_bytes, self._voiced_end_bytes = self._voiced_end_bytes, 0
         if voiced_ms < self._params.min_speech_ms:
             logger.info(f"Dropping utterance with only {voiced_ms:.0f}ms of speech (minimum {self._params.min_speech_ms}ms)")
             return
-        self._emit_utterance(message)
+        self._emit_utterance({**message, "audio_data": self._trim_trailing_silence(message["audio_data"], voiced_end_bytes)})
+
+    def _trim_trailing_silence(self, audio, voiced_end_bytes):
+        """Cut the dead air off the end, keeping a short natural tail.
+
+        An utterance always ends with the full silence limit, because that is what triggers
+        the flush. Sending it costs transcription time and, more importantly, gives the model
+        a stretch of nothing to fill with invented text.
+
+        Only trailing silence is removed. Pauses inside the utterance are left alone -- they
+        carry timing the transcript depends on, and removing them would make the word
+        timestamps disagree with the audio.
+        """
+        if not voiced_end_bytes:
+            return audio
+        keep = self._params.trailing_keep_ms * self.sample_rate // MS_PER_SECOND * BYTES_PER_SAMPLE
+        # Round to a whole sample: an odd byte count is not decodable PCM16.
+        end = min(len(audio), (voiced_end_bytes + keep) // BYTES_PER_SAMPLE * BYTES_PER_SAMPLE)
+        if end >= len(audio):
+            return audio
+        logger.info(f"Trimmed {duration_ms(audio[end:], self.sample_rate)}ms of trailing silence")
+        return audio[:end]
 
 
 def duration_ms(audio, sample_rate):

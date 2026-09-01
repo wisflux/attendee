@@ -36,9 +36,17 @@ DEFAULT_MIN_SPEECH_MS = 0
 # there is deliberately no second timer inside the detector.
 DEFAULT_MIN_SILENCE_MS = 1000
 
+# How much trailing silence to keep on a finished utterance. Every clip ends with exactly
+# min_silence_ms of silence, because that is the flush condition -- measured at roughly 30% of
+# a typical clip, and up to 80% of a short one. That dead air is what a transcription model
+# fills in when it invents text, so it is trimmed back to a natural-sounding tail. Zero would
+# clip the final consonant.
+DEFAULT_TRAILING_KEEP_MS = 200
+
 MIN_THRESHOLD, MAX_THRESHOLD = 0.05, 0.95
 MAX_HYSTERESIS_OFFSET = 0.5
 MAX_MIN_SPEECH_MS = 5_000
+MAX_TRAILING_KEEP_MS = 5_000
 MIN_MIN_SILENCE_MS, MAX_MIN_SILENCE_MS = 100, 30_000
 
 
@@ -78,6 +86,7 @@ class LocalVadParams:
     hysteresis_offset: float = DEFAULT_HYSTERESIS_OFFSET
     min_speech_ms: int = DEFAULT_MIN_SPEECH_MS
     min_silence_ms: int = DEFAULT_MIN_SILENCE_MS
+    trailing_keep_ms: int = DEFAULT_TRAILING_KEEP_MS
 
     @property
     def min_silence_seconds(self):
@@ -91,6 +100,7 @@ class LocalVadParams:
             hysteresis_offset=_env_float("VAD_HYSTERESIS_OFFSET", DEFAULT_HYSTERESIS_OFFSET, 0.0, MAX_HYSTERESIS_OFFSET),
             min_speech_ms=_env_int("VAD_MIN_SPEECH_MS", DEFAULT_MIN_SPEECH_MS, 0, MAX_MIN_SPEECH_MS),
             min_silence_ms=_env_int("VAD_MIN_SILENCE_MS", DEFAULT_MIN_SILENCE_MS, MIN_MIN_SILENCE_MS, MAX_MIN_SILENCE_MS),
+            trailing_keep_ms=_env_int("VAD_TRAILING_KEEP_MS", DEFAULT_TRAILING_KEEP_MS, 0, MAX_TRAILING_KEEP_MS),
         )
         if params.hysteresis_offset >= params.threshold:
             raise InvalidVadParameter(f"VAD_HYSTERESIS_OFFSET ({params.hysteresis_offset}) must be below VAD_THRESHOLD ({params.threshold}); otherwise speech could never end")
