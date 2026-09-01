@@ -12,31 +12,58 @@ from datetime import timedelta
 from bots.bot_controller.per_participant_non_streaming_audio_input_manager import (
     PerParticipantNonStreamingAudioInputManager,
 )
+from bots.bot_controller.silero_vad import SileroVoiceActivityDetector
+from bots.local_vad_params import LocalVadParams
 from bots.models import AudioChunk, RecordingManager, Utterance
 
 logger = logging.getLogger(__name__)
 
-# A local recording is one person's device, so utterances are cut more aggressively than a
-# meeting bot's: the desktop wants lines quickly, and short clips transcribe faster.
-LOCAL_SILENCE_DURATION_LIMIT_SECONDS = 1
+# How long an utterance may run before it is cut regardless of silence.
 LOCAL_UTTERANCE_SIZE_LIMIT_SECONDS = 30
 
-# webrtcvad only accepts 10/20/30ms frames, and the manager's "too large for VAD" guard
-# compares a BYTE length against a SAMPLE count -- so anything over ~15ms of audio silently
-# skips the VAD and is reported as speech. 10ms frames stay under that guard at every
-# supported rate, which is also what the bot adapters happen to emit.
+# The VAD is driven a frame at a time. Silero itself needs 32 ms windows, but it accumulates
+# them internally, so this only sets how finely the session timeline is walked.
 VAD_FRAME_MS = 10
 BYTES_PER_SAMPLE = 2
+MS_PER_SECOND = 1000
 
 
 class LocalAudioInputManager(PerParticipantNonStreamingAudioInputManager):
-    """The bots' VAD manager, used as-is.
+    """The bots' VAD manager with the local session's own tuning.
 
-    This subclass used to override ``silence_detected`` purely to swap in a loudness meter
-    that did not overflow. That fix now lives in ``bots.audio_utils`` and the base class uses
-    it, so the override is gone. The class is kept as the named seam for local-only VAD
-    behaviour, which the segmentation work will use.
+    Two local-only behaviours live here so the meeting-bot path keeps the detector's defaults:
+    a configured speech threshold with hysteresis, and a minimum amount of voiced audio before
+    an utterance is worth transcribing.
+
+    One manager instance serves exactly one audio source -- ``build_manager`` is called per
+    source per drain -- so the voiced-audio tally does not need to be keyed by speaker.
     """
+
+    def __init__(self, *, params, **kwargs):
+        super().__init__(**kwargs)
+        self._params = params
+        self.vad = SileroVoiceActivityDetector(
+            threshold=params.threshold,
+            hysteresis_offset=params.hysteresis_offset,
+        )
+        self._voiced_ms = 0.0
+        # Wrap rather than override process_chunk: the base decides when to flush, and this
+        # only decides whether the flushed result is worth keeping.
+        self._emit_utterance = self.save_audio_chunk_callback
+        self.save_audio_chunk_callback = self._emit_if_enough_speech
+
+    def silence_detected(self, speaker_id, chunk_bytes):
+        is_silent = super().silence_detected(speaker_id, chunk_bytes)
+        if not is_silent and chunk_bytes:
+            self._voiced_ms += duration_ms(chunk_bytes, self.sample_rate)
+        return is_silent
+
+    def _emit_if_enough_speech(self, message):
+        voiced_ms, self._voiced_ms = self._voiced_ms, 0.0
+        if voiced_ms < self._params.min_speech_ms:
+            logger.info(f"Dropping utterance with only {voiced_ms:.0f}ms of speech (minimum {self._params.min_speech_ms}ms)")
+            return
+        self._emit_utterance(message)
 
 
 def duration_ms(audio, sample_rate):
@@ -86,7 +113,9 @@ def create_utterance(recording, participant, message):
     logger.info(f"Local session {recording.bot.object_id}: queued utterance {utterance.id} ({audio_chunk.duration_ms}ms)")
 
 
-def build_manager(recording, participant, sample_rate):
+def build_manager(recording, participant, sample_rate, params=None):
+    params = params or LocalVadParams.from_env()
+
     def save_audio_chunk_callback(message):
         create_utterance(recording, participant, message)
 
@@ -95,11 +124,12 @@ def build_manager(recording, participant, sample_rate):
         return {"participant_uuid": participant.uuid, "participant_full_name": participant.full_name}
 
     return LocalAudioInputManager(
+        params=params,
         save_audio_chunk_callback=save_audio_chunk_callback,
         get_participant_callback=get_participant_callback,
         sample_rate=sample_rate,
         utterance_size_limit=LOCAL_UTTERANCE_SIZE_LIMIT_SECONDS * sample_rate * BYTES_PER_SAMPLE,
-        silence_duration_limit=LOCAL_SILENCE_DURATION_LIMIT_SECONDS,
+        silence_duration_limit=params.min_silence_seconds,
         should_print_diagnostic_info=False,
     )
 
@@ -139,5 +169,7 @@ def flush_remaining(manager, source, epoch, end_offset_ms):
     """
     if not manager.utterances.get(source):
         return
-    probe_at = epoch + timedelta(milliseconds=end_offset_ms, seconds=LOCAL_SILENCE_DURATION_LIMIT_SECONDS + 1)
+    # One second past the manager's own limit, so the probe always trips the flush no matter
+    # how the silence limit is configured.
+    probe_at = epoch + timedelta(milliseconds=end_offset_ms, seconds=manager.SILENCE_DURATION_LIMIT + 1)
     manager.process_chunk(source, probe_at, None)
