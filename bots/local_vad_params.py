@@ -43,10 +43,19 @@ DEFAULT_MIN_SILENCE_MS = 1000
 # clip the final consonant.
 DEFAULT_TRAILING_KEEP_MS = 200
 
+# Loudness below which a frame is discarded WITHOUT asking the VAD. The bot path uses 0.01
+# (-40 dBFS), which predates Silero and was doing the noise rejection webrtcvad could not:
+# measured, it deletes 910ms of speech at -38 dBFS and everything at -44 dBFS. The desktop
+# captures the microphone raw, with no automatic gain control, so ordinary speech frequently
+# sits below that. Silero scores real speech at -40 dBFS at 0.905, so this gate is now only
+# a "definitely nothing here" short-circuit and the speech decision belongs to the model.
+DEFAULT_SILENCE_RMS = 0.0005  # -66 dBFS, below any real microphone noise floor
+
 MIN_THRESHOLD, MAX_THRESHOLD = 0.05, 0.95
 MAX_HYSTERESIS_OFFSET = 0.5
 MAX_MIN_SPEECH_MS = 5_000
 MAX_TRAILING_KEEP_MS = 5_000
+MIN_SILENCE_RMS, MAX_SILENCE_RMS = 0.0, 0.05
 MIN_MIN_SILENCE_MS, MAX_MIN_SILENCE_MS = 100, 30_000
 
 
@@ -87,6 +96,7 @@ class LocalVadParams:
     min_speech_ms: int = DEFAULT_MIN_SPEECH_MS
     min_silence_ms: int = DEFAULT_MIN_SILENCE_MS
     trailing_keep_ms: int = DEFAULT_TRAILING_KEEP_MS
+    silence_rms: float = DEFAULT_SILENCE_RMS
 
     @property
     def min_silence_seconds(self):
@@ -101,6 +111,7 @@ class LocalVadParams:
             min_speech_ms=_env_int("VAD_MIN_SPEECH_MS", DEFAULT_MIN_SPEECH_MS, 0, MAX_MIN_SPEECH_MS),
             min_silence_ms=_env_int("VAD_MIN_SILENCE_MS", DEFAULT_MIN_SILENCE_MS, MIN_MIN_SILENCE_MS, MAX_MIN_SILENCE_MS),
             trailing_keep_ms=_env_int("VAD_TRAILING_KEEP_MS", DEFAULT_TRAILING_KEEP_MS, 0, MAX_TRAILING_KEEP_MS),
+            silence_rms=_env_float("VAD_SILENCE_RMS", DEFAULT_SILENCE_RMS, MIN_SILENCE_RMS, MAX_SILENCE_RMS),
         )
         if params.hysteresis_offset >= params.threshold:
             raise InvalidVadParameter(f"VAD_HYSTERESIS_OFFSET ({params.hysteresis_offset}) must be below VAD_THRESHOLD ({params.threshold}); otherwise speech could never end")

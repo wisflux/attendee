@@ -1,7 +1,7 @@
 import uuid
 from unittest import mock
 
-from django.test import TransactionTestCase
+from django.test import SimpleTestCase, TransactionTestCase
 
 from bots.models import (
     AudioChunk,
@@ -16,7 +16,7 @@ from bots.models import (
     TranscriptionFailureReasons,
     Utterance,
 )
-from bots.tasks.process_utterance_task import get_transcription_via_assemblyai, get_transcription_via_custom_async, get_transcription_via_custom_async_v2, get_transcription_via_deepgram, get_transcription_via_elevenlabs, get_transcription_via_gladia, get_transcription_via_openai, get_transcription_via_sarvam, process_utterance
+from bots.tasks.process_utterance_task import build_elevenlabs_transcription, get_transcription_via_assemblyai, get_transcription_via_custom_async, get_transcription_via_custom_async_v2, get_transcription_via_deepgram, get_transcription_via_elevenlabs, get_transcription_via_gladia, get_transcription_via_openai, get_transcription_via_sarvam, process_utterance
 
 
 class ProcessUtteranceTaskTest(TransactionTestCase):
@@ -1824,7 +1824,9 @@ class ElevenLabsProviderTest(TransactionTestCase):
         with self._patch_creds():
             # Mock successful response from ElevenLabs API
             mock_response = mock.Mock(status_code=200)
-            mock_response.json.return_value = {"text": "test transcript", "language_probability": 0.8, "words": [{"text": "test", "start": 0.0, "end": 0.5}]}
+            # `words` is authoritative now (that is how audio events are filtered out), so the
+            # fixture's word list has to agree with its text -- a real response always does.
+            mock_response.json.return_value = {"text": "test transcript", "language_probability": 0.8, "words": [{"text": "test", "type": "word", "start": 0.0, "end": 0.5}, {"text": " ", "type": "spacing", "start": 0.5, "end": 0.6}, {"text": "transcript", "type": "word", "start": 0.6, "end": 1.1}]}
             mock_post.return_value = mock_response
 
             transcript, failure = get_transcription_via_elevenlabs(self.utterance)
@@ -2495,3 +2497,59 @@ class CustomAsyncV2ProviderTest(TransactionTestCase):
 
             with self.assertRaisesRegex(RuntimeError, "boom"):
                 get_transcription_via_custom_async_v2(self.utterance)
+
+
+class BuildElevenLabsTranscriptionTests(SimpleTestCase):
+    """Rebuilding the transcript from the word list, with audio events dropped.
+
+    REGRESSION: a real local recording produced '[outro jingle]' and '[mouse clicking]' as
+    transcript lines. Those are ElevenLabs audio-event tags, on by default server-side, and
+    the old mapper both trusted the top-level `text` (which inlines them) and discarded each
+    word's `type` (which is the only way to tell them apart).
+    """
+
+    def test_audio_events_are_dropped(self):
+        result = {
+            "text": "hello [mouse clicking] world",
+            "language_code": "eng",
+            "words": [
+                {"text": "hello", "type": "word", "start": 0.0, "end": 0.4, "logprob": -0.1},
+                {"text": " ", "type": "spacing", "start": 0.4, "end": 0.5},
+                {"text": "[mouse clicking]", "type": "audio_event", "start": 0.5, "end": 0.9},
+                {"text": "world", "type": "word", "start": 0.9, "end": 1.3, "logprob": -0.2},
+            ],
+        }
+        built = build_elevenlabs_transcription(result)
+        self.assertEqual(built["transcript"], "hello world")
+        self.assertNotIn("mouse clicking", built["transcript"])
+        self.assertEqual([w["type"] for w in built["words"]], ["word", "spacing", "word"])
+
+    def test_an_utterance_that_is_only_an_audio_event_becomes_empty(self):
+        """'[outro jingle]' alone must not survive as a transcript line."""
+        result = {"text": "[outro jingle]", "language_code": "por", "words": [{"text": "[outro jingle]", "type": "audio_event", "start": 0.0, "end": 0.4}]}
+        self.assertEqual(build_elevenlabs_transcription(result)["transcript"], "")
+
+    def test_word_type_and_logprob_are_preserved(self):
+        """`type` distinguishes events downstream; `logprob` is the only confidence signal."""
+        result = {"text": "hi", "words": [{"text": "hi", "type": "word", "start": 0.0, "end": 0.2, "logprob": -0.05}]}
+        word = build_elevenlabs_transcription(result)["words"][0]
+        self.assertEqual(word["type"], "word")
+        self.assertEqual(word["logprob"], -0.05)
+
+    def test_a_response_without_words_falls_back_to_the_raw_text(self):
+        result = {"text": "plain text", "language_code": "eng"}
+        self.assertEqual(build_elevenlabs_transcription(result)["transcript"], "plain text")
+
+    def test_spacing_is_preserved_so_words_do_not_run_together(self):
+        result = {"text": "a b", "words": [
+            {"text": "a", "type": "word"}, {"text": " ", "type": "spacing"}, {"text": "b", "type": "word"}]}
+        self.assertEqual(build_elevenlabs_transcription(result)["transcript"], "a b")
+
+    def test_the_language_is_carried_through(self):
+        result = {"text": "hi", "language_code": "hin", "words": [{"text": "hi", "type": "word"}]}
+        self.assertEqual(build_elevenlabs_transcription(result)["language"], "hin")
+
+    def test_words_without_spacing_entries_are_joined_with_spaces(self):
+        """REGRESSION: concatenating directly gave 'helloworld' when no spacing words exist."""
+        result = {"text": "hello world", "words": [{"text": "hello", "type": "word"}, {"text": "world", "type": "word"}]}
+        self.assertEqual(build_elevenlabs_transcription(result)["transcript"], "hello world")

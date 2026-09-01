@@ -28,6 +28,9 @@ class PerParticipantNonStreamingAudioInputManager:
         self.UTTERANCE_SIZE_LIMIT = utterance_size_limit
         self.SILENCE_DURATION_LIMIT = silence_duration_limit
         self.vad = SileroVoiceActivityDetector()
+        # An instance attribute so a subclass can lower it. The default keeps the bot path
+        # exactly as it was.
+        self.silence_rms_threshold = SILENCE_RMS_THRESHOLD
 
         self.should_print_diagnostic_info = should_print_diagnostic_info
         self.reset_diagnostic_info()
@@ -86,7 +89,7 @@ class PerParticipantNonStreamingAudioInputManager:
         if rms_value == 0:
             self.diagnostic_info["total_chunks_marked_as_silent_due_to_rms_being_zero"] += 1
             return True
-        if rms_value < SILENCE_RMS_THRESHOLD:
+        if rms_value < self.silence_rms_threshold:
             self.diagnostic_info["total_chunks_marked_as_silent_due_to_rms_being_small"] += 1
             return True
         if not self.is_speech(speaker_id, chunk_bytes):

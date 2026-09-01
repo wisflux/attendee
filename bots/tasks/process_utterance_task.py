@@ -472,6 +472,46 @@ def elevenlabs_error_detail(response):
     return None
 
 
+# ElevenLabs marks non-speech sounds as their own words. Its default is to tag them, and a
+# meeting transcript wants none of it: "(laughter)", "[mouse clicking]", "[outro jingle]".
+ELEVENLABS_WORD_TYPE_AUDIO_EVENT = "audio_event"
+ELEVENLABS_WORD_TYPE_SPACING = "spacing"
+# Below the documented 100ms minimum the API rejects the clip, and a retryable classification
+# then burns five attempts and can drag the whole recording to transcription-FAILED.
+ELEVENLABS_MIN_DURATION_MS = 120
+# (connect, read). Without one a wedged socket holds a Celery slot until soft_time_limit=3600.
+ELEVENLABS_TIMEOUT_SECONDS = (5, 120)
+
+
+def build_elevenlabs_transcription(result):
+    """The transcript, rebuilt from the words rather than trusting the top-level text.
+
+    Audio events are dropped here as well as being disabled on the request. Belt and braces
+    on purpose: the parameter is a server-side default we do not control, and it was already
+    silently ignored once -- `requests` drops None-valued form fields, so the value the code
+    thought it was sending never reached the wire.
+    """
+    words = [w for w in result.get("words", []) if w.get("type") != ELEVENLABS_WORD_TYPE_AUDIO_EVENT]
+    if words:
+        # ElevenLabs emits the gaps between words as their own "spacing" entries, so the parts
+        # concatenate directly. A response without them (some models, and every hand-written
+        # test fixture) needs the spaces putting back or the words run together.
+        has_spacing = any(w.get("type") == ELEVENLABS_WORD_TYPE_SPACING for w in words)
+        joiner = "" if has_spacing else " "
+        transcript = joiner.join(w.get("text") or "" for w in words).strip()
+    else:
+        # No word list (or every word was an audio event) -- fall back to the raw text, but
+        # never resurrect a transcript that consisted only of events.
+        transcript = "" if result.get("words") else result.get("text", "")
+    return {
+        "transcript": transcript,
+        # `type` is kept now: dropping it is what made audio events indistinguishable
+        # downstream, and `logprob` is the only confidence signal the API gives us.
+        "words": [{"word": w.get("text"), "start": w.get("start"), "end": w.get("end"), "type": w.get("type"), "logprob": w.get("logprob")} for w in words],
+        "language": result.get("language_code", None),
+    }
+
+
 def get_transcription_via_elevenlabs(utterance):
     recording = utterance.recording
     transcription_settings = utterance.transcription_settings
@@ -486,6 +526,10 @@ def get_transcription_via_elevenlabs(utterance):
     api_key = elevenlabs_credentials.get("api_key")
     if not api_key:
         return None, {"reason": TranscriptionFailureReasons.CREDENTIALS_NOT_FOUND, "error": "api_key not in credentials"}
+
+    if utterance.duration_ms < ELEVENLABS_MIN_DURATION_MS:
+        logger.info(f"ElevenLabs transcription skipped for utterance {utterance.id}: {utterance.duration_ms}ms is below the API's 100ms minimum")
+        return {"transcript": "", "words": []}, None
 
     # Convert PCM audio to MP3 for ElevenLabs
     payload_mp3 = pcm_to_mp3(utterance.get_audio_blob().tobytes(), sample_rate=utterance.get_sample_rate())
@@ -507,10 +551,13 @@ def get_transcription_via_elevenlabs(utterance):
     if transcription_settings.elevenlabs_language_code():
         data["language_code"] = transcription_settings.elevenlabs_language_code()
 
-    data["tag_audio_events"] = transcription_settings.elevenlabs_tag_audio_events()
+    # Lowercase strings, not Python bools: `requests` drops a None-valued field entirely (which
+    # is how this setting went unsent for so long) and would send a bool as "True"/"False".
+    tag_audio_events = transcription_settings.elevenlabs_tag_audio_events()
+    data["tag_audio_events"] = "true" if tag_audio_events else "false"
 
     try:
-        response = requests.post(url, headers=headers, files=files, data=data if data else None)
+        response = requests.post(url, headers=headers, files=files, data=data if data else None, timeout=ELEVENLABS_TIMEOUT_SECONDS)
 
         if response.status_code == 401:
             logger.warning(f"ElevenLabs returned 401 for utterance {utterance.id}: {str(response.text)[:300]}")
@@ -540,14 +587,7 @@ def get_transcription_via_elevenlabs(utterance):
             logger.info(f"ElevenLabs transcription skipped for utterance {utterance.id} because the language probability was less than 0.5")
             return {"transcript": "", "words": []}, None
 
-        # Extract transcript and words from the response
-        transcript_text = result.get("text", "")
-        words = list(map(lambda word: {"word": word.get("text"), "start": word.get("start"), "end": word.get("end")}, result.get("words", [])))
-
-        # Format the response to match our expected schema
-        transcription = {"transcript": transcript_text, "words": words, "language": result.get("language_code", None)}
-
-        return transcription, None
+        return build_elevenlabs_transcription(result), None
 
     except requests.exceptions.RequestException as e:
         logger.error(f"ElevenLabs transcription request failed: {str(e)}")

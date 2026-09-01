@@ -46,6 +46,7 @@ class LocalAudioInputManager(PerParticipantNonStreamingAudioInputManager):
             threshold=params.threshold,
             hysteresis_offset=params.hysteresis_offset,
         )
+        self.silence_rms_threshold = params.silence_rms
         self._voiced_ms = 0.0
         self._voiced_end_bytes = 0
         # Wrap rather than override process_chunk: the base decides when to flush, and this
@@ -176,7 +177,23 @@ def feed(manager, source, audio, epoch, start_offset_ms, sample_rate):
             break
         frame_at = epoch + timedelta(milliseconds=start_offset_ms + (offset // frame_bytes) * VAD_FRAME_MS)
         manager.process_chunk(source, frame_at, frame)
+    log_rejections(manager, source)
     return len(audio) - (len(audio) % frame_bytes)
+
+
+def log_rejections(manager, source):
+    """Say why audio was discarded, so a silent transcript is diagnosable from the logs.
+
+    Without this, "I was speaking and nothing was transcribed" looks identical whether the
+    loudness gate, the VAD, or the upload was at fault.
+    """
+    info = manager.diagnostic_info
+    quiet = info["total_chunks_marked_as_silent_due_to_rms_being_small"]
+    empty = info["total_chunks_marked_as_silent_due_to_rms_being_zero"]
+    not_speech = info["total_chunks_marked_as_silent_due_to_vad"]
+    if not (quiet or empty or not_speech):
+        return
+    logger.info(f"VAD {source}: {quiet} frames below {manager.silence_rms_threshold} rms, {empty} digital silence, {not_speech} rejected by the model ({quiet * VAD_FRAME_MS}ms / {not_speech * VAD_FRAME_MS}ms)")
 
 
 def offset_of_buffered(manager, source, epoch):
