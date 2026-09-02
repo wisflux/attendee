@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 import numpy as np
 import webrtcvad
 
+from bots.audio_split import BYTES_PER_SAMPLE
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,6 +33,10 @@ class PerParticipantNonStreamingAudioInputManager:
 
         self.UTTERANCE_SIZE_LIMIT = utterance_size_limit
         self.SILENCE_DURATION_LIMIT = silence_duration_limit
+        # Optional callable(audio_bytes, sample_rate) -> byte offset, so a caller can make a
+        # size-cap flush land in a gap rather than mid-word. None keeps the meeting-bot path
+        # exactly as it was: the whole buffer is emitted and nothing is carried forward.
+        self.split_at_size_limit = None
         self.vad = webrtcvad.Vad()
 
         self.should_print_diagnostic_info = should_print_diagnostic_info
@@ -139,13 +145,20 @@ class PerParticipantNonStreamingAudioInputManager:
 
         # Flush buffer if needed
         if should_flush and len(self.utterances[speaker_id]) > 0:
+            buffered = bytes(self.utterances[speaker_id])
+            started_at = self.first_nonsilent_audio_time[speaker_id]
+
+            keep = len(buffered)
+            if reason == "buffer_full" and self.split_at_size_limit is not None:
+                keep = self.split_at_size_limit(buffered, self.sample_rate)
+
             participant = self.get_participant_callback(speaker_id)
             if participant:
                 self.save_audio_chunk_callback(
                     {
                         **participant,
-                        "audio_data": bytes(self.utterances[speaker_id]),
-                        "timestamp_ms": int(self.first_nonsilent_audio_time[speaker_id].timestamp() * 1000),
+                        "audio_data": buffered[:keep],
+                        "timestamp_ms": int(started_at.timestamp() * 1000),
                         "flush_reason": reason,
                         "sample_rate": self.sample_rate,
                     }
@@ -154,7 +167,17 @@ class PerParticipantNonStreamingAudioInputManager:
             else:
                 logger.warning(f"Participant {speaker_id} not found")
                 self.diagnostic_info["total_audio_chunks_not_sent_because_participant_not_found"] += 1
-            # Clear the buffer
-            self.utterances[speaker_id] = bytearray()
-            del self.first_nonsilent_audio_time[speaker_id]
-            del self.last_nonsilent_audio_time[speaker_id]
+
+            remainder = buffered[keep:]
+            if remainder:
+                # The speaker is still going. Carry what came after the split so the next
+                # utterance starts there rather than at the cap, and move its start time
+                # forward by the audio just emitted so the timeline stays continuous.
+                emitted_ms = keep / BYTES_PER_SAMPLE / (self.sample_rate / 1000)
+                self.utterances[speaker_id] = bytearray(remainder)
+                self.first_nonsilent_audio_time[speaker_id] = started_at + timedelta(milliseconds=emitted_ms)
+            else:
+                # Clear the buffer
+                self.utterances[speaker_id] = bytearray()
+                del self.first_nonsilent_audio_time[speaker_id]
+                del self.last_nonsilent_audio_time[speaker_id]

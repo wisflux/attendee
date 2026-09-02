@@ -3,7 +3,7 @@
 import numpy as np
 from django.test import SimpleTestCase
 
-from bots.audio_split import BYTES_PER_SAMPLE, quietest_split_point
+from bots.audio_split import BYTES_PER_SAMPLE, contains_speech, quietest_split_point
 
 SAMPLE_RATE = 16000
 
@@ -75,3 +75,15 @@ class QuietestSplitPointTest(SimpleTestCase):
         at = seconds_at(quietest_split_point(audio, SAMPLE_RATE, search_ms=3000))
 
         self.assertGreater(at, 5.0)
+
+
+class ContainsSpeechTest(SimpleTestCase):
+    def test_digital_silence_holds_no_speech(self):
+        self.assertFalse(contains_speech(pcm(quiet(1))))
+
+    def test_a_short_burst_inside_a_long_silence_still_counts(self):
+        """A tail is mostly the pause that preceded it; one word in it is still a word."""
+        self.assertTrue(contains_speech(pcm(quiet(2.9), loud(0.1))))
+
+    def test_empty_audio_holds_no_speech(self):
+        self.assertFalse(contains_speech(b""))

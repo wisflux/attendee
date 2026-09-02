@@ -57,3 +57,16 @@ def quietest_split_point(audio, sample_rate, search_ms=DEFAULT_SEARCH_MS, window
     if best_rms is None or best_rms > SILENCE_RMS_THRESHOLD:
         return len(audio)
     return best_centre * BYTES_PER_SAMPLE
+
+
+def contains_speech(audio):
+    """Whether a buffer holds anything above the silence threshold.
+
+    Used to decide if a tail is worth carrying into the next utterance. RMS over the whole
+    buffer is enough: a tail is at most a few seconds, so even a single word in it lifts the
+    measurement well clear of the threshold.
+    """
+    samples = np.frombuffer(audio, dtype=np.int16).astype(np.float64)
+    if samples.size == 0:
+        return False
+    return _rms(samples) > SILENCE_RMS_THRESHOLD

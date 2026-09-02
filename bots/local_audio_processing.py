@@ -10,6 +10,7 @@ from datetime import timedelta
 
 import numpy as np
 
+from bots.audio_split import BYTES_PER_SAMPLE, contains_speech, quietest_split_point
 from bots.bot_controller.per_participant_non_streaming_audio_input_manager import (
     PerParticipantNonStreamingAudioInputManager,
 )
@@ -34,7 +35,6 @@ LOCAL_UTTERANCE_SIZE_LIMIT_SECONDS = 30
 # skips the VAD and is reported as speech. 10ms frames stay under that guard at every
 # supported rate, which is also what the bot adapters happen to emit.
 VAD_FRAME_MS = 10
-BYTES_PER_SAMPLE = 2
 INT16_FULL_SCALE = 32768.0
 
 
@@ -120,6 +120,21 @@ def create_utterance(recording, participant, message):
     logger.info(f"Local session {recording.bot.object_id}: queued utterance {utterance.id} ({audio_chunk.duration_ms}ms)")
 
 
+def split_local_utterance(audio, sample_rate):
+    """Where to cut a local utterance that hit the size cap.
+
+    Falls back to the end when the tail after the split would hold no speech. Carrying dead
+    air forward opens the next utterance on silence, and because the silence timer measures
+    from the last real speech -- which is behind the split -- that utterance flushes almost
+    at once as a clip containing nothing but a pause. A near-silent clip is exactly the input
+    that makes the transcriber invent a line, so this must not manufacture them.
+    """
+    point = quietest_split_point(audio, sample_rate)
+    if point < len(audio) and not contains_speech(audio[point:]):
+        return len(audio)
+    return point
+
+
 def build_manager(recording, participant, sample_rate):
     def save_audio_chunk_callback(message):
         create_utterance(recording, participant, message)
@@ -128,7 +143,7 @@ def build_manager(recording, participant, sample_rate):
         # Fixed for a local session; the manager only needs this to be non-None.
         return {"participant_uuid": participant.uuid, "participant_full_name": participant.full_name}
 
-    return LocalAudioInputManager(
+    manager = LocalAudioInputManager(
         save_audio_chunk_callback=save_audio_chunk_callback,
         get_participant_callback=get_participant_callback,
         sample_rate=sample_rate,
@@ -136,6 +151,8 @@ def build_manager(recording, participant, sample_rate):
         silence_duration_limit=LOCAL_SILENCE_DURATION_LIMIT_SECONDS,
         should_print_diagnostic_info=False,
     )
+    manager.split_at_size_limit = split_local_utterance
+    return manager
 
 
 def feed(manager, source, audio, epoch, start_offset_ms, sample_rate):
