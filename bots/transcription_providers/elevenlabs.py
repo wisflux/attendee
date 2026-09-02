@@ -14,6 +14,12 @@ from bots.utils import pcm_to_mp3
 
 logger = logging.getLogger(__name__)
 
+# The API rejects a longer list, so a caller that configures more gets the first hundred
+# rather than a failed request.
+MAX_KEYTERMS = 100
+# Below this the model is unsure which language it heard, and the transcript is dropped.
+LOW_LANGUAGE_CONFIDENCE = 0.5
+
 
 def elevenlabs_error_detail(response):
     # ElevenLabs error bodies look like {"detail": {"status": "<code>", "message": "..."}}. The
@@ -67,6 +73,11 @@ def get_transcription_via_elevenlabs(utterance):
 
     data["tag_audio_events"] = transcription_settings.elevenlabs_tag_audio_events()
 
+    keyterms = transcription_settings.elevenlabs_keyterms()
+    if keyterms:
+        # Multipart form values must be scalars, so the list travels as a JSON string.
+        data["keyterms"] = json.dumps(keyterms[:MAX_KEYTERMS])
+
     try:
         response = requests.post(url, headers=headers, files=files, data=data if data else None)
 
@@ -94,8 +105,16 @@ def get_transcription_via_elevenlabs(utterance):
         result = response.json()
         logger.info("ElevenLabs transcription completed successfully")
 
-        if result.get("language_probability", 0.0) < 0.5:
-            logger.info(f"ElevenLabs transcription skipped for utterance {utterance.id} because the language probability was less than 0.5")
+        language_probability = result.get("language_probability", 0.0)
+        if language_probability < LOW_LANGUAGE_CONFIDENCE:
+            # Behaviour is unchanged -- the text is still dropped. It is recorded because this
+            # rule discards real speech as readily as wrong-language output, and whether to
+            # keep it should be settled by what it actually eats rather than by argument.
+            # Metrics at INFO; the text itself only at DEBUG, so meeting content does not land
+            # in production logs to satisfy a diagnostic.
+            dropped_text = result.get("text", "")
+            logger.info(f"ElevenLabs transcription skipped for utterance {utterance.id}: language confidence {language_probability:.2f} below {LOW_LANGUAGE_CONFIDENCE}, detected {result.get('language_code')}, {len(dropped_text)} characters dropped")
+            logger.debug(f"Dropped text for utterance {utterance.id}: {dropped_text}")
             return {"transcript": "", "words": []}, None
 
         # Extract transcript and words from the response

@@ -59,7 +59,10 @@ MAX_SEGMENT_BYTES = 1_000_000
 
 def build_local_session_settings(language_code):
     """Settings for an audio-only recording transcribed by ElevenLabs (defaults to scribe_v2)."""
-    elevenlabs_settings = {}
+    # Explicitly off rather than left to the API default: a local recording is a room with
+    # keyboards and chairs in it, and every tagged event lands in the transcript as if
+    # somebody had said it.
+    elevenlabs_settings = {"tag_audio_events": False}
     if language_code:
         elevenlabs_settings["language_code"] = language_code
 

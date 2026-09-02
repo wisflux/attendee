@@ -783,7 +783,15 @@ class TranscriptionSettings:
         return self._settings.get("elevenlabs", {}).get("language_code", None)
 
     def elevenlabs_tag_audio_events(self):
+        # Deliberately still None when unset. requests drops None form fields, so the API then
+        # applies its own default of True -- which writes "(mouse clicking)" into transcripts.
+        # Local sessions set this to False explicitly (build_local_session_settings); changing
+        # it for meeting bots is a product decision and needs its own change and verification.
         return self._settings.get("elevenlabs", {}).get("tag_audio_events", None)
+
+    def elevenlabs_keyterms(self):
+        """Terms the model is biased towards -- names, products, jargon."""
+        return self._settings.get("elevenlabs", {}).get("keyterms", None)
 
     def custom_async_additional_props(self):
         return self._settings.get("custom_async", {})

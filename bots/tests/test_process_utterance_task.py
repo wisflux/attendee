@@ -1,8 +1,10 @@
+import json
 import uuid
 from unittest import mock
 
 from django.test import TransactionTestCase
 
+from bots.local_session_api_views import build_local_session_settings
 from bots.models import (
     AudioChunk,
     Bot,
@@ -541,7 +543,6 @@ class DeepgramPrerecordedTranscriptionRedactionTest(TransactionTestCase):
         mock_get_transcription.assert_not_called()
 
 
-import json
 import types
 from unittest import mock
 
@@ -1918,6 +1919,106 @@ class ElevenLabsProviderTest(TransactionTestCase):
             self.assertIsNone(transcript)
             self.assertEqual(failure["reason"], TranscriptionFailureReasons.INTERNAL_ERROR)
             self.assertIn("Network error", failure["error"])
+
+    # ------------------------------------------------------------------ REQUEST PARAMETERS
+
+    def _ok_response(self, **overrides):
+        body = {"text": "", "language_code": "eng", "language_probability": 1.0, "words": []}
+        body.update(overrides)
+        return mock.Mock(status_code=200, **{"json.return_value": body})
+
+    @mock.patch("bots.transcription_providers.elevenlabs.requests.post")
+    @mock.patch("bots.transcription_providers.elevenlabs.pcm_to_mp3", return_value=b"mp3")
+    def test_a_local_session_sends_tag_audio_events_as_false(self, mock_pcm, mock_post):
+        """A local session must SEND False, not leave the field out.
+
+        requests drops None form fields, and ElevenLabs then applies its own default of
+        True -- which writes "(mouse clicking)" into the transcript as if it were speech.
+        Building the settings through the real helper is what pins that end to end.
+        """
+        self.bot.settings = build_local_session_settings(language_code=None)
+        self.bot.save()
+
+        with self._patch_creds():
+            mock_post.return_value = self._ok_response()
+
+            get_transcription_via_elevenlabs(self.utterance)
+
+            self.assertIs(mock_post.call_args[1]["data"]["tag_audio_events"], False)
+
+    @mock.patch("bots.transcription_providers.elevenlabs.requests.post")
+    @mock.patch("bots.transcription_providers.elevenlabs.pcm_to_mp3", return_value=b"mp3")
+    def test_a_meeting_bot_is_unaffected_by_the_local_session_default(self, mock_pcm, mock_post):
+        """The bot path keeps its existing behaviour: unset stays None and is not sent."""
+        with self._patch_creds():
+            mock_post.return_value = self._ok_response()
+
+            get_transcription_via_elevenlabs(self.utterance)
+
+            self.assertIsNone(mock_post.call_args[1]["data"]["tag_audio_events"])
+
+    @mock.patch("bots.transcription_providers.elevenlabs.requests.post")
+    @mock.patch("bots.transcription_providers.elevenlabs.pcm_to_mp3", return_value=b"mp3")
+    def test_keyterms_are_sent_as_json(self, mock_pcm, mock_post):
+        """Keyterms bias names and jargon. Multipart values are scalars, so the list is JSON."""
+        self.bot.settings = {"transcription_settings": {"elevenlabs": {"keyterms": ["Attendee", "Wisflux"]}}}
+        self.bot.save()
+
+        with self._patch_creds():
+            mock_post.return_value = self._ok_response()
+
+            get_transcription_via_elevenlabs(self.utterance)
+
+            self.assertEqual(json.loads(mock_post.call_args[1]["data"]["keyterms"]), ["Attendee", "Wisflux"])
+
+    @mock.patch("bots.transcription_providers.elevenlabs.requests.post")
+    @mock.patch("bots.transcription_providers.elevenlabs.pcm_to_mp3", return_value=b"mp3")
+    def test_keyterms_are_capped_at_the_api_limit(self, mock_pcm, mock_post):
+        """The API accepts at most 100; sending more is rejected, so truncate."""
+        self.bot.settings = {"transcription_settings": {"elevenlabs": {"keyterms": [f"term{index}" for index in range(150)]}}}
+        self.bot.save()
+
+        with self._patch_creds():
+            mock_post.return_value = self._ok_response()
+
+            get_transcription_via_elevenlabs(self.utterance)
+
+            self.assertEqual(len(json.loads(mock_post.call_args[1]["data"]["keyterms"])), 100)
+
+    @mock.patch("bots.transcription_providers.elevenlabs.requests.post")
+    @mock.patch("bots.transcription_providers.elevenlabs.pcm_to_mp3", return_value=b"mp3")
+    def test_keyterms_absent_when_unconfigured(self, mock_pcm, mock_post):
+        """An empty list must not be sent -- the API treats it as a real constraint."""
+        with self._patch_creds():
+            mock_post.return_value = self._ok_response()
+
+            get_transcription_via_elevenlabs(self.utterance)
+
+            self.assertNotIn("keyterms", mock_post.call_args[1]["data"])
+
+    @mock.patch("bots.transcription_providers.elevenlabs.requests.post")
+    @mock.patch("bots.transcription_providers.elevenlabs.pcm_to_mp3", return_value=b"mp3")
+    def test_low_language_confidence_logs_the_text_it_drops(self, mock_pcm, mock_post):
+        """Behaviour is unchanged -- the text is still dropped -- but now it is recorded.
+
+        The drop is a symptom-suppressor for utterances too short to identify a language
+        from, and it discards real speech as readily as wrong-language output. Logging what
+        it eats is what lets the decision to remove it rest on evidence rather than a guess.
+
+        The measurable part (confidence, language, length) is INFO; the text itself is DEBUG,
+        so meeting content does not land in production logs to satisfy a diagnostic.
+        """
+        with self._patch_creds():
+            mock_post.return_value = self._ok_response(text="we should ship on Friday", language_code="ta", language_probability=0.31)
+
+            with self.assertLogs("bots.transcription_providers.elevenlabs", level="DEBUG") as logs:
+                transcript, failure = get_transcription_via_elevenlabs(self.utterance)
+
+            self.assertIsNone(failure)
+            self.assertEqual(transcript["transcript"], "")
+            recorded = "\n".join(logs.output)
+            self.assertIn("we should ship on Friday", recorded)
+            self.assertIn("0.31", recorded)
 
 
 class CustomAsyncProviderTest(TransactionTestCase):
