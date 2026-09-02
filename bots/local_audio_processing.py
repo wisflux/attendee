@@ -19,7 +19,14 @@ logger = logging.getLogger(__name__)
 
 # A local recording is one person's device, so utterances are cut more aggressively than a
 # meeting bot's: the desktop wants lines quickly, and short clips transcribe faster.
-LOCAL_SILENCE_DURATION_LIMIT_SECONDS = 1
+#
+# 1.5s rather than 1.0s. An ordinary mid-sentence pause -- a breath, a moment's thinking --
+# routinely runs past a second, and cutting there splits one thought into fragments that are
+# each transcribed with no knowledge of the others: half-finished lines, punctuation that
+# stops mid-clause, and a language re-guessed from a fragment too short to identify. The cost
+# is 500ms of extra latency after a speaker stops, which is the whole of it -- an utterance
+# still closes on silence, never on waiting for more speech.
+LOCAL_SILENCE_DURATION_LIMIT_SECONDS = 1.5
 LOCAL_UTTERANCE_SIZE_LIMIT_SECONDS = 30
 
 # webrtcvad only accepts 10/20/30ms frames, and the manager's "too large for VAD" guard
