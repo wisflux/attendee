@@ -37,6 +37,7 @@ django.setup()
 import requests  # noqa: E402
 import webrtcvad  # noqa: E402
 
+from bots.local_audio_processing import LOCAL_SILENCE_DURATION_LIMIT_SECONDS, LOCAL_UTTERANCE_SIZE_LIMIT_SECONDS, LocalAudioInputManager, split_local_utterance  # noqa: E402
 from bots.models import Credentials  # noqa: E402
 from bots.utils import pcm_to_mp3  # noqa: E402
 
@@ -174,10 +175,45 @@ def report_clipped_words(is_silent, truth, frames):
         print(f"{a * FRAME_MS / 1000:>7.2f}-{b * FRAME_MS / 1000:>7.2f}s | {(b - a) * FRAME_MS:>4}ms | {' '.join(spoken)[:40]}")
 
 
+def voice_segments(is_silent, frames):
+    """Contiguous VOICE / SILENCE stretches, so they can be checked against the audio."""
+    segments, start = [], 0
+    for i in range(1, frames):
+        if is_silent[i] != is_silent[i - 1]:
+            segments.append((start, i, is_silent[i - 1]))
+            start = i
+    segments.append((start, frames, is_silent[-1]))
+    return segments
+
+
+def utterances_sent(audio, frames):
+    """Drive the real manager and record what it would actually send, and when."""
+    from datetime import datetime, timedelta
+
+    epoch = datetime(2026, 1, 1)
+    sent = []
+    manager = LocalAudioInputManager(
+        save_audio_chunk_callback=sent.append,
+        get_participant_callback=lambda _: {"participant_uuid": "mic", "participant_full_name": "You"},
+        sample_rate=SAMPLE_RATE,
+        utterance_size_limit=LOCAL_UTTERANCE_SIZE_LIMIT_SECONDS * SAMPLE_RATE * 2,
+        silence_duration_limit=LOCAL_SILENCE_DURATION_LIMIT_SECONDS,
+        should_print_diagnostic_info=False,
+    )
+    # What build_manager() wires up, so the boundaries shown are production's.
+    manager.split_at_size_limit = split_local_utterance
+    for i in range(frames):
+        manager.process_chunk("mic", epoch + timedelta(milliseconds=i * FRAME_MS), audio[i * FRAME_BYTES : (i + 1) * FRAME_BYTES])
+    # Close whatever is still buffered, the way stopping a recording does.
+    manager.process_chunk("mic", epoch + timedelta(milliseconds=frames * FRAME_MS, seconds=LOCAL_SILENCE_DURATION_LIMIT_SECONDS + 1), None)
+    return [(int(m["timestamp_ms"] - epoch.timestamp() * 1000), len(m["audio_data"]) / 32.0, m["flush_reason"]) for m in sent]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("audio", help="any file ffmpeg can decode")
     parser.add_argument("--no-truth", action="store_true", help="skip the transcription used as ground truth")
+    parser.add_argument("--segments", action="store_true", help="print every VOICE/SILENCE stretch and every utterance sent")
     args = parser.parse_args()
 
     audio = to_pcm(args.audio)
@@ -194,6 +230,19 @@ def main():
     for gap in FLUSH_GAPS_MS:
         print(f"gaps >= {gap}ms  : {sum(1 for x in lengths if x >= gap)}  (a gap this long is what closes an utterance)")
     print(f"longest silence : {max(lengths) if lengths else 0}ms")
+
+    if args.segments:
+        print("\nVAD SEGMENTS  (check these against the audio)")
+        print(f"{'#':>4} | {'start':>8} | {'end':>8} | {'dur':>7} | verdict")
+        print("-" * 52)
+        for k, (a, b, silent) in enumerate(voice_segments(is_silent, frames), 1):
+            print(f"{k:>4} | {a * FRAME_MS / 1000:>7.2f}s | {b * FRAME_MS / 1000:>7.2f}s | {(b - a) * FRAME_MS:>5}ms | {'SILENCE' if silent else 'VOICE'}")
+
+        print("\nWHAT THE MANAGER SENDS FOR TRANSCRIPTION")
+        print(f"{'#':>4} | {'start':>8} | {'end':>8} | {'dur':>8} | why it closed")
+        print("-" * 60)
+        for k, (start_ms, dur_ms, why) in enumerate(utterances_sent(audio, frames), 1):
+            print(f"{k:>4} | {start_ms / 1000:>7.2f}s | {(start_ms + dur_ms) / 1000:>7.2f}s | {dur_ms:>7.0f}ms | {why}")
 
     if args.no_truth:
         return
