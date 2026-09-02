@@ -1780,8 +1780,8 @@ class ElevenLabsProviderTest(TransactionTestCase):
 
     # ------------------------------------------------------------------ SUCCESS PATH
 
-    @mock.patch("bots.tasks.process_utterance_task.requests.post")
-    @mock.patch("bots.tasks.process_utterance_task.pcm_to_mp3", return_value=b"mp3")
+    @mock.patch("bots.transcription_providers.elevenlabs.requests.post")
+    @mock.patch("bots.transcription_providers.elevenlabs.pcm_to_mp3", return_value=b"mp3")
     def test_success_path(self, mock_pcm, mock_post):
         """ElevenLabs transcription succeeds and returns formatted transcript with words."""
         with self._patch_creds():
@@ -1813,8 +1813,8 @@ class ElevenLabsProviderTest(TransactionTestCase):
             # Check headers in kwargs
             self.assertEqual(call_args[1]["headers"]["xi-api-key"], "fake‑key")
 
-    @mock.patch("bots.tasks.process_utterance_task.requests.post")
-    @mock.patch("bots.tasks.process_utterance_task.pcm_to_mp3", return_value=b"mp3")
+    @mock.patch("bots.transcription_providers.elevenlabs.requests.post")
+    @mock.patch("bots.transcription_providers.elevenlabs.pcm_to_mp3", return_value=b"mp3")
     def test_success_path_with_bot_settings(self, mock_pcm, mock_post):
         """ElevenLabs transcription succeeds with bot-specific settings applied."""
         # Configure bot with ElevenLabs settings
@@ -1850,8 +1850,8 @@ class ElevenLabsProviderTest(TransactionTestCase):
         self.assertIsNone(transcript)
         self.assertEqual(failure["reason"], TranscriptionFailureReasons.CREDENTIALS_NOT_FOUND)
 
-    @mock.patch("bots.tasks.process_utterance_task.requests.post")
-    @mock.patch("bots.tasks.process_utterance_task.pcm_to_mp3", return_value=b"mp3")
+    @mock.patch("bots.transcription_providers.elevenlabs.requests.post")
+    @mock.patch("bots.transcription_providers.elevenlabs.pcm_to_mp3", return_value=b"mp3")
     def test_invalid_credentials_401(self, mock_pcm, mock_post):
         """ElevenLabs 401 is retried first (transient free-tier blip), then becomes CREDENTIALS_INVALID once retries are exhausted."""
         with self._patch_creds():
@@ -1874,8 +1874,8 @@ class ElevenLabsProviderTest(TransactionTestCase):
             self.assertEqual(failure["reason"], TranscriptionFailureReasons.CREDENTIALS_INVALID)
             self.assertEqual(failure["detail"], {"status": "quota_exceeded", "message": "You have reached your quota."})
 
-    @mock.patch("bots.tasks.process_utterance_task.requests.post")
-    @mock.patch("bots.tasks.process_utterance_task.pcm_to_mp3", return_value=b"mp3")
+    @mock.patch("bots.transcription_providers.elevenlabs.requests.post")
+    @mock.patch("bots.transcription_providers.elevenlabs.pcm_to_mp3", return_value=b"mp3")
     def test_invalid_credentials_401_with_unparseable_body(self, mock_pcm, mock_post):
         """A 401 whose body isn't the expected error JSON still fails cleanly, without a detail key."""
         with self._patch_creds():
@@ -1890,8 +1890,8 @@ class ElevenLabsProviderTest(TransactionTestCase):
             self.assertEqual(failure["reason"], TranscriptionFailureReasons.CREDENTIALS_INVALID)
             self.assertNotIn("detail", failure)
 
-    @mock.patch("bots.tasks.process_utterance_task.requests.post")
-    @mock.patch("bots.tasks.process_utterance_task.pcm_to_mp3", return_value=b"mp3")
+    @mock.patch("bots.transcription_providers.elevenlabs.requests.post")
+    @mock.patch("bots.transcription_providers.elevenlabs.pcm_to_mp3", return_value=b"mp3")
     def test_request_failure_500(self, mock_pcm, mock_post):
         """ElevenLabs returns 500 → TRANSCRIPTION_REQUEST_FAILED."""
         with self._patch_creds():
@@ -1906,8 +1906,8 @@ class ElevenLabsProviderTest(TransactionTestCase):
             self.assertEqual(failure["status_code"], 500)
             self.assertEqual(failure["response_text"], "Internal Server Error")
 
-    @mock.patch("bots.tasks.process_utterance_task.requests.post")
-    @mock.patch("bots.tasks.process_utterance_task.pcm_to_mp3", return_value=b"mp3")
+    @mock.patch("bots.transcription_providers.elevenlabs.requests.post")
+    @mock.patch("bots.transcription_providers.elevenlabs.pcm_to_mp3", return_value=b"mp3")
     def test_request_exception(self, mock_pcm, mock_post):
         """Network request exception → TRANSCRIPTION_REQUEST_FAILED."""
         with self._patch_creds():
