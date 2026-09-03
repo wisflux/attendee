@@ -45,6 +45,27 @@ CLOSE_SESSION_ENDED = "session ended"
 # An utterance cut by the size cap ends mid-syllable, so a request must not end there.
 SIZE_CAP_FLUSH_REASON = "buffer_full"
 
+# The silence written between two utterances inside one request is the REAL pause between them,
+# capped here. A fixed 3s spacer reads to the model as a full stop and undoes the context the
+# group exists to buy; zero would splice the end of one word onto the start of the next.
+GAP_CAP_MS = 1000
+
+
+def gaps_ms(members):
+    """Silence to write between each consecutive pair, in timeline order.
+
+    One entry shorter than `members`. This same list builds the audio AND locates the words that
+    come back, so the two cannot drift apart -- recomputing it separately in the splitter is what
+    would let a few milliseconds per utterance accumulate and land words on the wrong row.
+
+    Never negative: trimming and rounding can leave one row ending after the next begins.
+    """
+    gaps = []
+    for previous, current in zip(members, members[1:]):
+        elapsed = current["timestamp_ms"] - (previous["timestamp_ms"] + previous["duration_ms"])
+        gaps.append(max(0, min(elapsed, GAP_CAP_MS)))
+    return gaps
+
 
 def span_ms(members):
     """How much of the session's timeline the group covers, gaps included."""
