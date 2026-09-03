@@ -17,6 +17,7 @@ from bots.local_utterance_group import (
     CLOSE_SESSION_ENDED,
     CLOSE_STOPPED_TALKING,
     MAX_BLOCK_MS,
+    MAX_GAP_MS,
     MIN_BLOCK_VOICE_MS,
     MIN_BOUNDARY_PAUSE_MS,
     SILENCE_KEEP_FRACTION,
@@ -134,6 +135,26 @@ class GapsBetweenMembersTest(TestCase):
         group = members(1000, 1000, gap_ms=10000)
 
         self.assertEqual(gaps_ms(group), [int(10000 * SILENCE_KEEP_FRACTION)])
+
+    def test_a_pause_over_the_limit_but_under_the_bound_is_still_a_fraction(self):
+        """The bound is a safety net for the pathological case, not a second rhythm rule: between
+        the two thresholds the measured fraction still decides."""
+        group = members(1000, 1000, gap_ms=20000)
+
+        self.assertEqual(gaps_ms(group), [int(20000 * SILENCE_KEEP_FRACTION)])
+
+    def test_a_pause_no_one_would_speak_across_is_bounded(self):
+        """A group held open by the voice floor can meet its next member minutes later.
+
+        A cough carries less than MIN_BLOCK_VOICE_MS, so its group never closes -- and the span
+        ceiling cannot rescue it either, because the span only grows when a member is added. The
+        next real speech joins whenever it comes, and a fraction of a pause that long is still a
+        request that is mostly silence, which is what makes the model invent a line.
+        """
+        five_minutes_ms = 5 * 60 * 1000
+        group = members(250, 4250, gap_ms=five_minutes_ms)
+
+        self.assertEqual(gaps_ms(group), [MAX_GAP_MS])
 
     def test_utterances_that_overlap_never_produce_negative_silence(self):
         """Trimming and rounding can leave one row ending after the next begins."""

@@ -53,13 +53,20 @@ SIZE_CAP_FLUSH_REASON = "buffer_full"
 TRIM_SILENCE_OVER_MS = 3000
 # Past that limit it is shortened to this share of itself, never removed.
 SILENCE_KEEP_FRACTION = 0.30
+# A safety bound, not a second rhythm rule. A group holding less than MIN_BLOCK_VOICE_MS never
+# closes -- the voice floor blocks it, and the ceiling cannot fire because the span only grows when
+# a member is added -- so a cough can meet its next member minutes later. A fraction of a pause
+# that long is still a request that is mostly silence, which is the input that makes the model
+# invent a line. Set above every pause the measured reference contained: its best block ran 44.35s
+# carrying 37.1s of voice, so no single silence inside it exceeded 7.25s.
+MAX_GAP_MS = 10000
 
 
 def shortened_silence_ms(silence_ms):
     """A pause kept whole below the limit, shortened above it, never deleted."""
     if silence_ms <= TRIM_SILENCE_OVER_MS:
         return silence_ms
-    return int(silence_ms * SILENCE_KEEP_FRACTION)
+    return min(MAX_GAP_MS, int(silence_ms * SILENCE_KEEP_FRACTION))
 
 
 def gaps_ms(members):
