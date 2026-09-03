@@ -19,7 +19,9 @@ from django.test import TestCase
 from bots.local_audio_processing import (
     LOCAL_SILENCE_DURATION_LIMIT_SECONDS,
     LOCAL_UTTERANCE_SIZE_LIMIT_SECONDS,
+    TRIM_SILENCE_OVER_MS,
     LocalAudioInputManager,
+    shorten_long_silences,
     split_local_utterance,
 )
 
@@ -248,3 +250,55 @@ class SileroStateTest(TestCase):
 
         self.assertEqual(set(exported), {"state", "context", "buffer", "remainder", "speaking"})
         self.assertEqual(len(bytes.fromhex(exported["state"])), 4 * STATE_SHAPE[0] * STATE_SHAPE[1] * STATE_SHAPE[2])
+
+
+class ShortenLongSilencesTest(TestCase):
+    """Long pauses are shortened, never removed, and only in the middle."""
+
+    def frames_of(self, *sections):
+        return b"".join(timeline(*sections)), verdicts_for(*sections)
+
+    def test_a_long_silence_is_shortened_not_removed(self):
+        """The transcriber reads a pause as sentence structure. Deleting one costs content."""
+        audio, verdicts = self.frames_of((1000, speech_frame), (4000, silent_frame), (1000, speech_frame))
+
+        out = shorten_long_silences(audio, verdicts, SAMPLE_RATE)
+
+        self.assertLess(len(out), len(audio))
+        self.assertGreater(len(out), 2000 * SAMPLE_RATE // 1000 * 2)  # both speech runs survive
+
+    def test_a_short_pause_is_left_exactly_alone(self):
+        """Short gaps sit inside and between words; touching them corrupts the speech."""
+        audio, verdicts = self.frames_of((1000, speech_frame), (800, silent_frame), (1000, speech_frame))
+
+        self.assertEqual(shorten_long_silences(audio, verdicts, SAMPLE_RATE), audio)
+
+    def test_the_edges_of_a_long_silence_are_kept(self):
+        """Only the middle goes, so the splice is silence-to-silence and clips no word."""
+        audio, verdicts = self.frames_of((1000, speech_frame), (4000, silent_frame), (1000, speech_frame))
+
+        out = shorten_long_silences(audio, verdicts, SAMPLE_RATE)
+
+        remaining_silence = len(out) - 2000 * SAMPLE_RATE // 1000 * 2
+        self.assertGreater(remaining_silence, 0)
+
+    def test_audio_with_no_verdicts_is_returned_untouched(self):
+        audio = b"".join(timeline((500, speech_frame)))
+
+        self.assertEqual(shorten_long_silences(audio, [], SAMPLE_RATE), audio)
+
+    def test_nothing_is_shortened_at_the_current_silence_limit(self):
+        """Groundwork, deliberately inert for now -- and this pins why.
+
+        A silence long enough to be worth shortening (3s) is far past the limit that CLOSES an
+        utterance (1.5s), so it can only ever fall between two utterances, never inside one.
+        The transform starts doing work when utterances are accumulated into longer blocks;
+        until then it must leave everything exactly as it is, and this asserts that it does.
+        """
+        emitted = []
+        sections = ((500, speech_frame), (4000, silent_frame), (500, speech_frame), (2000, silent_frame))
+        feed(build_manager(emitted, verdicts=verdicts_for(*sections)), timeline(*sections))
+
+        self.assertEqual(len(emitted), 2, "a 4s silence closes the utterance rather than sitting inside it")
+        for message in emitted:
+            self.assertLess(len(message["audio_data"]), TRIM_SILENCE_OVER_MS * SAMPLE_RATE // 1000 * 2)
