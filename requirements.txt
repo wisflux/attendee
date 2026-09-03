@@ -107,3 +107,4 @@ Cython==3.2.4
 PyJWT==2.9.0
 gdown==6.0.0
 python-dotenv==1.0.1
+onnxruntime==1.20.1

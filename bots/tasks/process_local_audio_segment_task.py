@@ -128,7 +128,7 @@ def _drain(client, bot_id, source, is_final):
         last_sequence = segment["sequence"]
 
     epoch = bot.created_at.replace(tzinfo=None)
-    manager = build_manager(recording, participant, sample_rate)
+    manager = build_manager(recording, participant, sample_rate, vad_state=tail["vad_state"])
     consumed = feed(manager, source, bytes(audio), epoch, start_offset_ms or 0, sample_rate)
 
     if is_final:
@@ -136,7 +136,7 @@ def _drain(client, bot_id, source, is_final):
         # complete by finalize_local_session, after EVERY source has flushed -- doing it here
         # would let one source close the recording before the other's last utterance exists.
         flush_remaining(manager, source, epoch, end_offset_ms or 0)
-        store.save_tail(client, bot_id, source, b"", None, None, last_sequence, sample_rate)
+        store.save_tail(client, bot_id, source, b"", None, None, last_sequence, sample_rate, manager.export_vad_state())
         return
 
     remaining = manager.utterances.get(source, b"")
@@ -150,4 +150,5 @@ def _drain(client, bot_id, source, is_final):
         end_offset_ms,
         last_sequence,
         sample_rate,
+        manager.export_vad_state(),
     )
