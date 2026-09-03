@@ -14,6 +14,7 @@ from bots.audio_split import BYTES_PER_SAMPLE, contains_speech, quietest_split_p
 from bots.bot_controller.per_participant_non_streaming_audio_input_manager import (
     PerParticipantNonStreamingAudioInputManager,
 )
+from bots.local_silero_vad import LocalSileroVad
 from bots.models import AudioChunk, RecordingManager, Utterance
 
 logger = logging.getLogger(__name__)
@@ -52,25 +53,41 @@ def normalized_rms(audio_bytes):
 
 
 class LocalAudioInputManager(PerParticipantNonStreamingAudioInputManager):
-    """The bots' VAD manager, but with a loudness meter that does not overflow.
+    """The bots' VAD manager with Silero in place of the amplitude gate.
 
-    Only ``silence_detected`` is overridden, and only to swap in the corrected RMS. The
-    shared function is deliberately left alone so the bot path stays byte-identical; fixing
-    it there is worth doing, but as its own change with its own testing.
+    The shared ``silence_detected`` decides silence from loudness alone, below -40 dBFS,
+    before any speech model is consulted -- and measured against the transcriber's own word
+    timings that discards 22-52% of real speech, clipping the ends of words. Silero misses
+    ~7%. The amplitude test is deliberately not kept in front of it: with the gate ahead,
+    flagged silence goes back from 25s to 43s on a 94s recording, which is the gate's answer
+    rather than Silero's, and the change buys nothing.
+
+    Only the local path is affected. Meeting bots keep the shared implementation.
     """
 
+    def __init__(self, *, vad_state=None, detector=None, **kwargs):
+        super().__init__(**kwargs)
+        # `detector` exists for tests. Silero rejects every synthetic signal -- tones, noise,
+        # formant stacks -- which is correct behaviour and makes it useless for driving the
+        # manager's own logic, so those tests script the verdicts instead. Silero's accuracy
+        # is measured on real audio by bots/e2e_tests/vad_report.py.
+        self.vad = detector or LocalSileroVad(kwargs["sample_rate"], state=vad_state)
+
     def silence_detected(self, chunk_bytes):
-        rms_value = normalized_rms(chunk_bytes)
-        if rms_value == 0:
-            self.diagnostic_info["total_chunks_marked_as_silent_due_to_rms_being_zero"] += 1
+        if not chunk_bytes:
             return True
-        if rms_value < 0.01:
-            self.diagnostic_info["total_chunks_marked_as_silent_due_to_rms_being_small"] += 1
-            return True
-        if not self.is_speech(chunk_bytes):
-            self.diagnostic_info["total_chunks_marked_as_silent_due_to_vad"] += 1
-            return True
-        return False
+        if self.vad.is_speech(chunk_bytes):
+            return False
+        self.diagnostic_info["total_chunks_marked_as_silent_due_to_vad"] += 1
+        return True
+
+    def export_vad_state(self):
+        """Handed to the Redis tail so the next drain resumes mid-stream, not cold."""
+        return self.vad.export_state()
+
+    def is_speech(self, chunk_bytes):
+        """Kept so the shared manager's contract still holds; the local path uses Silero."""
+        return self.vad.is_speech(chunk_bytes)
 
 
 def duration_ms(audio, sample_rate):
@@ -135,7 +152,7 @@ def split_local_utterance(audio, sample_rate):
     return point
 
 
-def build_manager(recording, participant, sample_rate):
+def build_manager(recording, participant, sample_rate, vad_state=None):
     def save_audio_chunk_callback(message):
         create_utterance(recording, participant, message)
 
@@ -144,6 +161,7 @@ def build_manager(recording, participant, sample_rate):
         return {"participant_uuid": participant.uuid, "participant_full_name": participant.full_name}
 
     manager = LocalAudioInputManager(
+        vad_state=vad_state,
         save_audio_chunk_callback=save_audio_chunk_callback,
         get_participant_callback=get_participant_callback,
         sample_rate=sample_rate,

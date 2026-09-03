@@ -3,11 +3,12 @@
 These drive the real LocalAudioInputManager rather than a stand-in, so what is pinned is how
 production actually cuts utterances -- including its RMS gate and its VAD.
 
-The speech fixture is a phase-continuous 200 Hz tone, chosen by measurement rather than
-assumption: webrtcvad classifies it as speech in 200 of 200 frames, whereas a constant
-full-scale signal is classified as speech in only 10 of 200. The detector carries hangover
-state and settles to "not speech" on a DC signal, which would quietly turn every test built
-on one into a test of silence handling instead.
+Speech is SCRIPTED, not synthesised. Silero rejects every artificial signal -- pure tones,
+white noise, formant stacks all score 0 of 100 -- which is correct behaviour and exactly why
+it beats an amplitude gate, but it makes synthetic audio useless for driving the manager.
+So these tests inject a detector with scripted verdicts and check the manager's own logic:
+when an utterance opens, when it closes, what gets carried forward. Silero's accuracy against
+real speech is measured separately by bots/e2e_tests/vad_report.py.
 """
 
 from datetime import datetime, timedelta
@@ -43,7 +44,7 @@ def silent_frame(index):
 
 
 def timeline(*sections):
-    """Build a frame list from (milliseconds, frame_kind) pairs, keeping the tone's phase."""
+    """Frames from (milliseconds, kind) pairs."""
     frames = []
     for milliseconds, kind in sections:
         for _ in range(milliseconds // FRAME_MS):
@@ -51,8 +52,33 @@ def timeline(*sections):
     return frames
 
 
-def build_manager(emitted, utterance_size_limit=None):
+def verdicts_for(*sections):
+    """The speech/silence script matching the same (milliseconds, kind) pairs."""
+    out = []
+    for milliseconds, kind in sections:
+        out.extend([kind is speech_frame] * (milliseconds // FRAME_MS))
+    return out
+
+
+class ScriptedDetector:
+    """Says speech for frames whose index is marked True; state export is a stub."""
+
+    def __init__(self, verdicts):
+        self._verdicts = verdicts
+        self._index = 0
+
+    def is_speech(self, chunk_bytes):
+        verdict = self._verdicts[min(self._index, len(self._verdicts) - 1)]
+        self._index += 1
+        return verdict
+
+    def export_state(self):
+        return {"scripted": True}
+
+
+def build_manager(emitted, utterance_size_limit=None, verdicts=None):
     return LocalAudioInputManager(
+        detector=ScriptedDetector(verdicts if verdicts is not None else [True] * 100000),
         save_audio_chunk_callback=emitted.append,
         get_participant_callback=lambda _: {"participant_uuid": SPEAKER, "participant_full_name": "You"},
         sample_rate=SAMPLE_RATE,
@@ -77,14 +103,16 @@ class SilenceLimitTest(TestCase):
         knowledge of each other, which is what produces half-finished lines.
         """
         emitted = []
-        feed(build_manager(emitted), timeline((200, speech_frame), (1000, silent_frame), (200, speech_frame)))
+        sections = ((200, speech_frame), (1000, silent_frame), (200, speech_frame))
+        feed(build_manager(emitted, verdicts=verdicts_for(*sections)), timeline(*sections))
 
         self.assertEqual(emitted, [])
 
     def test_a_long_pause_still_ends_the_utterance(self):
         """Past the limit an utterance must close, or nothing is ever transcribed."""
         emitted = []
-        feed(build_manager(emitted), timeline((200, speech_frame), (2000, silent_frame)))
+        sections = ((200, speech_frame), (2000, silent_frame))
+        feed(build_manager(emitted, verdicts=verdicts_for(*sections)), timeline(*sections))
 
         self.assertEqual(len(emitted), 1)
         self.assertEqual(emitted[0]["flush_reason"], "silence_limit")
@@ -92,7 +120,8 @@ class SilenceLimitTest(TestCase):
     def test_speech_either_side_of_a_short_pause_lands_in_one_utterance(self):
         """The point of the wider limit: one continuous thought, one request."""
         emitted = []
-        feed(build_manager(emitted), timeline((200, speech_frame), (1000, silent_frame), (200, speech_frame), (2000, silent_frame)))
+        sections = ((200, speech_frame), (1000, silent_frame), (200, speech_frame), (2000, silent_frame))
+        feed(build_manager(emitted, verdicts=verdicts_for(*sections)), timeline(*sections))
 
         self.assertEqual(len(emitted), 1)
         self.assertGreater(len(emitted[0]["audio_data"]), 1400 * SAMPLE_RATE // 1000 * 2)
@@ -104,7 +133,7 @@ class SizeCapSplitTest(TestCase):
     CAP_BYTES = 2 * SAMPLE_RATE * 2  # two seconds
 
     def _manager_splitting_in_half(self, emitted):
-        manager = build_manager(emitted, utterance_size_limit=self.CAP_BYTES)
+        manager = build_manager(emitted, utterance_size_limit=self.CAP_BYTES, verdicts=[True] * 100000)
         manager.split_at_size_limit = lambda audio, rate: len(audio) // 2
         return manager
 
@@ -137,7 +166,7 @@ class SizeCapSplitTest(TestCase):
     def test_the_bot_path_is_untouched_when_no_hook_is_set(self):
         """Default None must behave exactly as before: whole buffer out, nothing carried."""
         emitted = []
-        manager = build_manager(emitted, utterance_size_limit=self.CAP_BYTES)
+        manager = build_manager(emitted, utterance_size_limit=self.CAP_BYTES, verdicts=[True] * 100000)
         self.assertIsNone(manager.split_at_size_limit)
 
         feed(manager, timeline((2000, speech_frame)))
@@ -165,3 +194,57 @@ class LocalSplitPolicyTest(TestCase):
         audio = b"".join(timeline((2000, speech_frame), (200, silent_frame), (1000, speech_frame)))
 
         self.assertLess(split_local_utterance(audio, SAMPLE_RATE), len(audio))
+
+
+class SileroStateTest(TestCase):
+    """Silero is recurrent: the drain task must hand its memory to the next drain."""
+
+    def test_state_survives_a_round_trip(self):
+        """A resumed detector continues mid-stream instead of restarting cold.
+
+        The drain runs as a Celery task and keeps nothing between runs, so without this the
+        model is rebuilt roughly once a second and never leaves its warm-up regime -- worth
+        about 13 seconds of false silence on a 90 second recording.
+        """
+        from bots.local_silero_vad import LocalSileroVad
+
+        frames = timeline((600, speech_frame))
+        continuous = LocalSileroVad(SAMPLE_RATE)
+        for frame in frames:
+            continuous.is_speech(frame)
+
+        first = LocalSileroVad(SAMPLE_RATE)
+        for frame in frames[:30]:
+            first.is_speech(frame)
+        resumed = LocalSileroVad(SAMPLE_RATE, state=first.export_state())
+        for frame in frames[30:]:
+            verdict = resumed.is_speech(frame)
+
+        self.assertEqual(verdict, continuous.is_speech(frames[-1]))
+
+    def test_unusable_state_starts_cold_rather_than_failing(self):
+        """A stale or corrupt blob must not take a session down with it."""
+        from bots.local_silero_vad import LocalSileroVad
+
+        detector = LocalSileroVad(SAMPLE_RATE, state={"state": "not-hex"})
+
+        self.assertFalse(detector.is_speech(silent_frame(0)))
+
+    def test_the_manager_exports_state_the_store_can_carry(self):
+        from bots.local_silero_vad import STATE_SHAPE
+
+        # A real Silero detector, not the scripted one -- this asserts the shape the Redis
+        # tail has to carry.
+        manager = LocalAudioInputManager(
+            save_audio_chunk_callback=lambda _: None,
+            get_participant_callback=lambda _: {"participant_uuid": SPEAKER, "participant_full_name": "You"},
+            sample_rate=SAMPLE_RATE,
+            utterance_size_limit=LOCAL_UTTERANCE_SIZE_LIMIT_SECONDS * SAMPLE_RATE * 2,
+            silence_duration_limit=LOCAL_SILENCE_DURATION_LIMIT_SECONDS,
+            should_print_diagnostic_info=False,
+        )
+        feed(manager, timeline((200, speech_frame)))
+        exported = manager.export_vad_state()
+
+        self.assertEqual(set(exported), {"state", "context", "buffer", "remainder", "speaking"})
+        self.assertEqual(len(bytes.fromhex(exported["state"])), 4 * STATE_SHAPE[0] * STATE_SHAPE[1] * STATE_SHAPE[2])

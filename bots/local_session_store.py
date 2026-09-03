@@ -77,13 +77,15 @@ def load_tail(client, bot_id, source):
             "end_offset_ms": None,
             "last_sequence": -1,
             "sample_rate": None,
+            "vad_state": None,
         }
     payload = json.loads(raw)
     payload["audio"] = base64.b64decode(payload["audio"])
+    payload.setdefault("vad_state", None)
     return payload
 
 
-def save_tail(client, bot_id, source, audio, started_offset_ms, end_offset_ms, last_sequence, sample_rate):
+def save_tail(client, bot_id, source, audio, started_offset_ms, end_offset_ms, last_sequence, sample_rate, vad_state=None):
     payload = {
         "audio": base64.b64encode(bytes(audio)).decode(),
         "started_offset_ms": started_offset_ms,
@@ -92,6 +94,9 @@ def save_tail(client, bot_id, source, audio, started_offset_ms, end_offset_ms, l
         "last_sequence": last_sequence,
         # Carried so a final flush can rebuild the VAD without the caller supplying it.
         "sample_rate": sample_rate,
+        # Silero is recurrent; without its state the next drain restarts cold and
+        # mislabels roughly 13 seconds per 90 as silence. ~1.3KB.
+        "vad_state": vad_state,
     }
     client.set(tail_key(bot_id, source), json.dumps(payload), ex=TAIL_TTL_SECONDS)
 
