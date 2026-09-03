@@ -90,20 +90,27 @@ class LocalAudioInputManager(PerParticipantNonStreamingAudioInputManager):
         return True
 
     def _shorten_then_emit(self, message):
-        """Shorten long silences before the audio is sent for transcription.
+        """Drop the silence that closed the utterance, then shorten any long ones inside it.
 
         A pause is not padding -- the transcriber reads it as sentence structure, and removing
         one costs real content. Measured three ways on a real recording, deleting silence lost
         a surname, lost a company name, dropped an entire Hindi section and invented an ending.
-        So the pause stays; only its MIDDLE is removed, and only when it runs past the limit.
-        Cutting the middle means the splice happens silence-to-silence, so no word's onset or
-        decay is ever clipped.
+        So an INTERNAL pause stays; only its MIDDLE is removed, and only when it runs past the
+        limit. Cutting the middle means the splice happens silence-to-silence, so no word's
+        onset or decay is ever clipped.
+
+        The silence at the END is different: it is not structure, it is the flush trigger
+        (see `frames_without_trailing_silence`), so it goes apart from a short pad.
         """
         audio = message["audio_data"]
-        frames = len(audio) // (self.sample_rate // 100 * BYTES_PER_SAMPLE)
+        frame_bytes = self.sample_rate // 100 * BYTES_PER_SAMPLE
+        frames = len(audio) // frame_bytes
         # The verdicts are the tail of everything fed: the base drops leading silence before a
         # buffer opens, so the last `frames` of them are this utterance's.
         verdicts, self._verdicts = self._verdicts[-frames:], []
+        keep = frames_without_trailing_silence(verdicts)
+        if keep < frames:
+            audio, verdicts = audio[: keep * frame_bytes], verdicts[:keep]
         self._emit_utterance({**message, "audio_data": shorten_long_silences(audio, verdicts, self.sample_rate)})
 
     def export_vad_state(self):
@@ -113,6 +120,28 @@ class LocalAudioInputManager(PerParticipantNonStreamingAudioInputManager):
     def is_speech(self, chunk_bytes):
         """Kept so the shared manager's contract still holds; the local path uses Silero."""
         return self.vad.is_speech(chunk_bytes)
+
+
+# How much of the closing silence to keep, so the final word's own decay is never clipped.
+TRAILING_SILENCE_PAD_MS = 250
+
+
+def frames_without_trailing_silence(verdicts):
+    """How many leading frames of an utterance are worth sending.
+
+    Every utterance ends with the silence that triggered its flush -- that pause is how the
+    manager knows a sentence finished, so it is always in the buffer. Measured at roughly 30%
+    of a typical clip and up to 80% of a short one, and a model handed mostly-silence fills it
+    with invented text rather than returning nothing.
+
+    Everything is kept when there is no speech at all: an utterance trimmed to nothing would
+    be emitted carrying no audio, which is worse than sending the pause.
+    """
+    pad_frames = TRAILING_SILENCE_PAD_MS // VAD_FRAME_MS
+    for index in range(len(verdicts) - 1, -1, -1):
+        if verdicts[index]:
+            return min(len(verdicts), index + 1 + pad_frames)
+    return len(verdicts)
 
 
 # A silence longer than this is shortened; anything shorter is left exactly as it is, because
