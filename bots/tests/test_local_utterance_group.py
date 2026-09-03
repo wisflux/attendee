@@ -16,12 +16,13 @@ from bots.local_utterance_group import (
     CLOSE_ENOUGH_CONTEXT,
     CLOSE_SESSION_ENDED,
     CLOSE_STOPPED_TALKING,
-    GAP_CAP_MS,
     MAX_BLOCK_MS,
     MIN_BLOCK_VOICE_MS,
     MIN_BOUNDARY_PAUSE_MS,
+    SILENCE_KEEP_FRACTION,
     STOPPED_TALKING_MS,
     TARGET_VOICE_MS,
+    TRIM_SILENCE_OVER_MS,
     close_reason,
     gaps_ms,
 )
@@ -118,11 +119,20 @@ class GapsBetweenMembersTest(TestCase):
 
         self.assertEqual(gaps_ms(group), [400])
 
-    def test_a_long_pause_is_capped(self):
-        """Past the cap the model hears a full stop, which is what grouping is avoiding."""
-        group = members(1000, 1000, gap_ms=9000)
+    def test_a_pause_short_enough_to_be_structure_is_kept_whole(self):
+        """The reference blocks that produced the best transcripts were 16-42% silence. A pause
+        IS the sentence structure -- deleting one was measured losing a surname and a company
+        name -- so anything under the limit is reproduced exactly."""
+        group = members(1000, 1000, gap_ms=TRIM_SILENCE_OVER_MS)
 
-        self.assertEqual(gaps_ms(group), [GAP_CAP_MS])
+        self.assertEqual(gaps_ms(group), [TRIM_SILENCE_OVER_MS])
+
+    def test_a_pause_long_enough_to_read_as_an_ending_is_shortened_not_removed(self):
+        """Past the limit it stops being a breath and starts being a full stop, so it is cut to
+        the same share the offline reference kept -- shortened, never deleted."""
+        group = members(1000, 1000, gap_ms=10000)
+
+        self.assertEqual(gaps_ms(group), [int(10000 * SILENCE_KEEP_FRACTION)])
 
     def test_utterances_that_overlap_never_produce_negative_silence(self):
         """Trimming and rounding can leave one row ending after the next begins."""

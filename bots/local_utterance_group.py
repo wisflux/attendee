@@ -45,10 +45,21 @@ CLOSE_SESSION_ENDED = "session ended"
 # An utterance cut by the size cap ends mid-syllable, so a request must not end there.
 SIZE_CAP_FLUSH_REASON = "buffer_full"
 
-# The silence written between two utterances inside one request is the REAL pause between them,
-# capped here. A fixed 3s spacer reads to the model as a full stop and undoes the context the
-# group exists to buy; zero would splice the end of one word onto the start of the next.
-GAP_CAP_MS = 1000
+# A pause is sentence structure, not padding. The offline blocks that produced the best measured
+# transcripts were 16% and 42% silence, and deleting silence was measured losing a speaker's
+# surname, losing a company name and dropping an entire Hindi section. So inside a request the
+# REAL pause is reproduced -- up to the point where a silence stops reading as a breath and starts
+# reading as a full stop, which undoes the context the group exists to buy.
+TRIM_SILENCE_OVER_MS = 3000
+# Past that limit it is shortened to this share of itself, never removed.
+SILENCE_KEEP_FRACTION = 0.30
+
+
+def shortened_silence_ms(silence_ms):
+    """A pause kept whole below the limit, shortened above it, never deleted."""
+    if silence_ms <= TRIM_SILENCE_OVER_MS:
+        return silence_ms
+    return int(silence_ms * SILENCE_KEEP_FRACTION)
 
 
 def gaps_ms(members):
@@ -58,12 +69,15 @@ def gaps_ms(members):
     come back, so the two cannot drift apart -- recomputing it separately in the splitter is what
     would let a few milliseconds per utterance accumulate and land words on the wrong row.
 
+    Each utterance has already had the silence that closed it trimmed back to a short pad, so the
+    gap measured here plus that pad reconstructs the pause as it was actually spoken.
+
     Never negative: trimming and rounding can leave one row ending after the next begins.
     """
     gaps = []
     for previous, current in zip(members, members[1:]):
         elapsed = current["timestamp_ms"] - (previous["timestamp_ms"] + previous["duration_ms"])
-        gaps.append(max(0, min(elapsed, GAP_CAP_MS)))
+        gaps.append(shortened_silence_ms(max(0, elapsed)))
     return gaps
 
 
