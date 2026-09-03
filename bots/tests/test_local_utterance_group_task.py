@@ -9,6 +9,7 @@ from unittest import mock
 
 from django.test import TransactionTestCase
 
+from bots.local_session_api_views import pending_utterance_count
 from bots.models import AudioChunk, Bot, Credentials, Organization, Participant, Project, Recording, RecordingStates, Utterance
 from bots.tasks.process_local_utterance_group_task import process_local_utterance_group
 
@@ -123,3 +124,59 @@ class ProcessLocalUtteranceGroupTest(TransactionTestCase):
 
         sent = [utterance.id for utterance in send.call_args.args[0]]
         self.assertEqual(sent, list(reversed(self.ids)))
+
+
+class PendingUtteranceCountTest(TransactionTestCase):
+    """What the desktop needs to know that a flat line count no longer tells it.
+
+    Rows are invisible until they have text, and a group holds several of them for up to a minute.
+    Without a pending count the app sees the same number of lines poll after poll and declares the
+    session finished over words that are still on their way.
+    """
+
+    def setUp(self):
+        self.org = Organization.objects.create(name="Org")
+        self.project = Project.objects.create(name="Proj", organization=self.org)
+        self.bot = Bot.objects.create(project=self.project, meeting_url="local_recording")
+        self.recording = Recording.objects.create(
+            bot=self.bot,
+            recording_type=1,
+            transcription_type=1,
+            state=RecordingStates.IN_PROGRESS,
+            transcription_provider=ELEVENLABS_PROVIDER,
+        )
+        self.participant = Participant.objects.create(bot=self.bot, uuid="mic")
+
+    def _utterance(self, transcription=None):
+        return Utterance.objects.create(
+            recording=self.recording,
+            participant=self.participant,
+            timestamp_ms=0,
+            duration_ms=UTTERANCE_MS,
+            transcription=transcription,
+        )
+
+    def test_a_row_still_waiting_for_its_words_is_counted(self):
+        self._utterance()
+
+        self.assertEqual(pending_utterance_count(self.bot), 1)
+
+    def test_a_row_that_has_its_text_is_not_counted(self):
+        self._utterance(transcription={"transcript": "done", "words": []})
+
+        self.assertEqual(pending_utterance_count(self.bot), 0)
+
+    def test_a_session_with_nothing_transcribed_yet_reports_them_all(self):
+        for _ in range(3):
+            self._utterance()
+        self._utterance(transcription={"transcript": "done", "words": []})
+
+        self.assertEqual(pending_utterance_count(self.bot), 3)
+
+    def test_another_session_is_not_counted(self):
+        """The count gates one session's UI; another user's backlog must not hold it open."""
+        other_bot = Bot.objects.create(project=self.project, meeting_url="local_recording")
+        other_recording = Recording.objects.create(bot=other_bot, recording_type=1, transcription_type=1, state=RecordingStates.IN_PROGRESS, transcription_provider=ELEVENLABS_PROVIDER)
+        Utterance.objects.create(recording=other_recording, participant=self.participant, timestamp_ms=0, duration_ms=UTTERANCE_MS)
+
+        self.assertEqual(pending_utterance_count(self.bot), 0)

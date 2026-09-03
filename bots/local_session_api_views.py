@@ -30,6 +30,7 @@ from .models import (
     SessionTypes,
     TranscriptionProviders,
     TranscriptionTypes,
+    Utterance,
 )
 from .tasks.process_local_audio_segment_task import drain_local_session_audio, finalize_local_session
 from .team_day_user_auth import decode_user_id
@@ -227,12 +228,28 @@ class LocalSessionStopView(APIView):
         return Response({"id": bot.object_id}, status=status.HTTP_200_OK)
 
 
+# How many of this session's utterances are still waiting for their text.
+PENDING_UTTERANCES_HEADER = "X-Pending-Utterances"
+
+
+def pending_utterance_count(bot):
+    """Rows that exist but have no transcription yet -- the ones a caller cannot see."""
+    return Utterance.objects.filter(recording__bot=bot, transcription__isnull=True).count()
+
+
 class LocalSessionTranscriptView(TranscriptView):
     """Owner-gated live transcript. Reuses the bot transcript logic unchanged, but first
     confirms the caller's token owns this local session so one user can't poll another's."""
 
     def get(self, request, object_id):
         owner_user_id = decode_user_id(request)
-        if find_local_session(request, object_id, owner_user_id) is None:
+        bot = find_local_session(request, object_id, owner_user_id)
+        if bot is None:
             return Response({"error": "Local session not found"}, status=status.HTTP_404_NOT_FOUND)
-        return super().get(request, object_id)
+        response = super().get(request, object_id)
+        # Utterances are hidden until they have text, and a group holds several of them for up to
+        # a minute -- so a flat line count no longer means "transcription has caught up". Without
+        # this the desktop declares the session finished over rows whose words are still coming.
+        # A header rather than a body field: the bot transcript response shape is a public API.
+        response[PENDING_UTTERANCES_HEADER] = str(pending_utterance_count(bot))
+        return response
