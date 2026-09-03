@@ -4,7 +4,7 @@ import os
 import subprocess
 import threading
 import time
-from typing import Any, Callable, Dict, List, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import requests
 
@@ -32,6 +32,7 @@ def get_mp3_for_utterance_group(
     utterances: Sequence[Utterance],
     *,
     silence_seconds: float = 3.0,
+    gaps_seconds: Optional[Sequence[float]] = None,
     channels: int = 1,
     sample_rate: int,
     sample_width_bytes: int = 2,  # 2 => 16-bit PCM (s16le)
@@ -65,7 +66,16 @@ def get_mp3_for_utterance_group(
     target_sr = sample_rate
 
     bytes_per_second = target_sr * int(channels) * int(sample_width_bytes)
-    total_silence_bytes = int(round(float(silence_seconds) * bytes_per_second))
+
+    def silence_bytes_before(utterance_index: int) -> int:
+        """Silence written ahead of utterance `utterance_index`, which never leads the file.
+
+        `gaps_seconds` carries the REAL pause between each pair, so the model hears the
+        conversation's own rhythm instead of a fixed spacer that reads as a full stop. It must be
+        the same list that `utterance_windows` is given, or the words come back onto wrong rows.
+        """
+        gap = silence_seconds if gaps_seconds is None else gaps_seconds[utterance_index - 1]
+        return int(round(float(gap) * bytes_per_second))
 
     cmd = [
         "ffmpeg",
@@ -124,7 +134,7 @@ def get_mp3_for_utterance_group(
                     raise ValueError(f"Sample rate mismatch: utterance {utterance.id} has {utterance.get_sample_rate()}, expected {target_sr}.")
 
                 if utterance_index > 0:
-                    write_silence(total_silence_bytes)
+                    write_silence(silence_bytes_before(utterance_index))
 
                 blob = utterance.get_audio_blob()
                 if blob is None:
@@ -171,19 +181,46 @@ def get_mp3_for_utterance_group(
             pass
 
 
+def utterance_windows(
+    utterances: Sequence[Utterance],
+    *,
+    silence_seconds: float = 3.0,
+    gaps_seconds: Optional[Sequence[float]] = None,
+) -> List[tuple[int, float, float]]:
+    """Where each utterance sits inside the concatenated audio, as (id, start, end) seconds.
+
+    `gaps_seconds` is the silence actually written between each consecutive pair -- one entry
+    shorter than `utterances`. Passing the SAME list that built the audio is what keeps the two
+    from drifting apart; recomputing a gap here is how milliseconds accumulate into words landing
+    on the wrong row. When it is omitted every gap is `silence_seconds`, which is what the async
+    transcription path has always done.
+    """
+    windows: List[tuple[int, float, float]] = []
+    cursor = 0.0
+    for index, utterance in enumerate(utterances):
+        if index:
+            cursor += silence_seconds if gaps_seconds is None else gaps_seconds[index - 1]
+        duration_seconds = utterance.duration_ms / 1000.0
+        windows.append((utterance.id, cursor, cursor + duration_seconds))
+        cursor += duration_seconds
+    return windows
+
+
 def split_transcription_by_utterance(
     transcription_result: Dict[str, Any],
     utterances: Sequence[Utterance],
     *,
     silence_seconds: float = 3.0,
+    gaps_seconds: Optional[Sequence[float]] = None,
 ) -> Dict[int, Dict[str, Any]]:
     """
     Split transcription result from a combined MP3 back into per-utterance results.
 
-    Assumes:
-      - utterances were concatenated in THIS order
-      - each utterance contributes duration_ms / 1000.0 seconds of audio
-      - exactly `silence_seconds` of silence was inserted between utterances
+    A word belongs to the utterance whose window its START falls in, and every instant from one
+    window's start to the next belongs to somebody -- so no word can fall between two windows and
+    be discarded. This previously dropped any word that straddled a boundary, which only survived
+    because the fixed 3s spacer meant no word ever spanned a join; with real gaps between
+    utterances it would happen constantly.
 
     Returns:
       { utterance_id: {"transcript": str, "words": [...], "language": str|None} }
@@ -193,41 +230,40 @@ def split_transcription_by_utterance(
 
     language = transcription_result.get("language")
     words = transcription_result.get("words") or []
-
-    # Build utterance time windows in the combined audio.
-    windows: List[tuple[int, float, float]] = []
-    t = 0.0
-    for u in utterances:
-        dur_s = u.duration_ms / 1000.0
-        start = t
-        end = start + dur_s
-        windows.append((u.id, start, end))
-        t = end + silence_seconds
+    windows = utterance_windows(utterances, silence_seconds=silence_seconds, gaps_seconds=gaps_seconds)
 
     output = {utterance.id: {"transcript": "", "words": [], "language": language} for utterance in utterances}
 
-    # Assign each word to the first window it overlaps with.
+    # With real gaps an utterance claims every word up to where the NEXT one begins, so no word
+    # can fall between two windows and be lost. With the fixed spacer the original rule stands:
+    # only words overlapping this window, and a straddler dropped as corrupt -- nothing real
+    # spans three seconds of silence, so there the drop is a sanity guard rather than data loss.
+    uses_real_gaps = gaps_seconds is not None
+
     word_index = 0
     for window_index, (utterance_id, start, end) in enumerate(windows):
         utterance_words = []
         next_start = windows[window_index + 1][1] if window_index + 1 < len(windows) else None
+        claim_until = next_start if uses_real_gaps else end
 
         while word_index < len(words):
-            w = words[word_index]
-            # If word starts at or after window end, stop (no overlap with this window)
-            if w["start"] >= end:
+            word = words[word_index]
+            if claim_until is not None and word["start"] >= claim_until:
                 break
-            # If word ends after window start, it overlaps
-            if w["end"] > start:
-                # Check that word doesn't also overlap with next window (unexpected)
-                if next_start is not None and w["end"] > next_start:
-                    logger.warning(f"Word overlaps with subsequent window, skipping: {w}")
-                else:
-                    # Create a new word object with the start and end times adjusted to the current window
-                    word_adjusted = dict(w)
-                    word_adjusted["start"] = word_adjusted["start"] - start
-                    word_adjusted["end"] = word_adjusted["end"] - start
-                    utterance_words.append(word_adjusted)
+            if not uses_real_gaps:
+                if word["end"] <= start:
+                    word_index += 1
+                    continue
+                if next_start is not None and word["end"] > next_start:
+                    logger.warning(f"Word overlaps with subsequent window, skipping: {word}")
+                    word_index += 1
+                    continue
+            adjusted = dict(word)
+            adjusted["start"] = word["start"] - start
+            # Clamped so a straddling word cannot claim to run past its own row's audio, and
+            # never behind its own start when it sat in the silence after the row.
+            adjusted["end"] = max(adjusted["start"], min(word["end"], end) - start)
+            utterance_words.append(adjusted)
             word_index += 1
 
         output[utterance_id]["words"] = utterance_words
