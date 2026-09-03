@@ -72,14 +72,39 @@ class LocalAudioInputManager(PerParticipantNonStreamingAudioInputManager):
         # manager's own logic, so those tests script the verdicts instead. Silero's accuracy
         # is measured on real audio by bots/e2e_tests/vad_report.py.
         self.vad = detector or LocalSileroVad(kwargs["sample_rate"], state=vad_state)
+        # One verdict per frame fed, so the emitted audio can be trimmed without asking the
+        # detector twice. Reconciled against the audio's own length at emit time, because the
+        # base class decides which frames actually enter the buffer.
+        self._verdicts = []
+        self._emit_utterance = self.save_audio_chunk_callback
+        self.save_audio_chunk_callback = self._shorten_then_emit
 
     def silence_detected(self, chunk_bytes):
         if not chunk_bytes:
             return True
-        if self.vad.is_speech(chunk_bytes):
+        speaking = self.vad.is_speech(chunk_bytes)
+        self._verdicts.append(speaking)
+        if speaking:
             return False
         self.diagnostic_info["total_chunks_marked_as_silent_due_to_vad"] += 1
         return True
+
+    def _shorten_then_emit(self, message):
+        """Shorten long silences before the audio is sent for transcription.
+
+        A pause is not padding -- the transcriber reads it as sentence structure, and removing
+        one costs real content. Measured three ways on a real recording, deleting silence lost
+        a surname, lost a company name, dropped an entire Hindi section and invented an ending.
+        So the pause stays; only its MIDDLE is removed, and only when it runs past the limit.
+        Cutting the middle means the splice happens silence-to-silence, so no word's onset or
+        decay is ever clipped.
+        """
+        audio = message["audio_data"]
+        frames = len(audio) // (self.sample_rate // 100 * BYTES_PER_SAMPLE)
+        # The verdicts are the tail of everything fed: the base drops leading silence before a
+        # buffer opens, so the last `frames` of them are this utterance's.
+        verdicts, self._verdicts = self._verdicts[-frames:], []
+        self._emit_utterance({**message, "audio_data": shorten_long_silences(audio, verdicts, self.sample_rate)})
 
     def export_vad_state(self):
         """Handed to the Redis tail so the next drain resumes mid-stream, not cold."""
@@ -88,6 +113,39 @@ class LocalAudioInputManager(PerParticipantNonStreamingAudioInputManager):
     def is_speech(self, chunk_bytes):
         """Kept so the shared manager's contract still holds; the local path uses Silero."""
         return self.vad.is_speech(chunk_bytes)
+
+
+# A silence longer than this is shortened; anything shorter is left exactly as it is, because
+# short gaps sit inside and between words and removing them corrupts the speech.
+TRIM_SILENCE_OVER_MS = 3000
+# ...down to this share of its length, split evenly between the two edges.
+SILENCE_KEEP_FRACTION = 0.30
+
+
+def shorten_long_silences(audio, verdicts, sample_rate):
+    """Remove the middle of every silence past the limit, keeping both of its edges."""
+    frame_bytes = sample_rate // 100 * BYTES_PER_SAMPLE
+    frames = min(len(verdicts), len(audio) // frame_bytes)
+    if frames == 0:
+        return audio
+
+    keep = [True] * frames
+    run = 0
+    for index in range(frames + 1):
+        silent = (not verdicts[index]) if index < frames else False
+        if silent:
+            run += 1
+            continue
+        if run * VAD_FRAME_MS > TRIM_SILENCE_OVER_MS:
+            edge = max(1, int(run * SILENCE_KEEP_FRACTION / 2))
+            for position in range(index - run + edge, index - edge):
+                keep[position] = False
+        run = 0
+
+    if all(keep):
+        return audio
+    kept = b"".join(audio[i * frame_bytes : (i + 1) * frame_bytes] for i in range(frames) if keep[i])
+    return kept + audio[frames * frame_bytes :]
 
 
 def duration_ms(audio, sample_rate):
