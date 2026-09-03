@@ -43,6 +43,26 @@ def lock_key(bot_id, source):
     return f"local_session_lock:{bot_id}:{source}"
 
 
+def group_key(bot_id, source):
+    return f"local_session_group:{bot_id}:{source}"
+
+
+def load_group(client, bot_id, source):
+    """The utterances gathered so far for one source's next transcription request.
+
+    IDS ONLY, never audio. The audio is already on the AudioChunk rows, so losing this key costs
+    the grouping and never the speech -- the utterances are simply transcribed one at a time.
+
+    Per source, so a group can never mix mic and system audio into one request.
+    """
+    raw = client.get(group_key(bot_id, source))
+    return json.loads(raw) if raw else []
+
+
+def save_group(client, bot_id, source, members):
+    client.set(group_key(bot_id, source), json.dumps(members), ex=TAIL_TTL_SECONDS)
+
+
 def enqueue_segment(bot_id, source, sequence, audio, sample_rate, offset_ms):
     """Append an uploaded segment to its source's FIFO queue, ready for the next drain."""
     payload = {
@@ -63,7 +83,7 @@ def clear_session_state(bot_id):
     client = redis_client()
     keys = []
     for source in LOCAL_SESSION_SOURCES:
-        keys += [queue_key(bot_id, source), tail_key(bot_id, source), lock_key(bot_id, source)]
+        keys += [queue_key(bot_id, source), tail_key(bot_id, source), lock_key(bot_id, source), group_key(bot_id, source)]
     client.delete(*keys)
 
 

@@ -119,3 +119,16 @@ def close_reason(members, silence_after_ms, session_ended=False):
     if voice_ms >= TARGET_VOICE_MS and silence_after_ms >= MIN_BOUNDARY_PAUSE_MS:
         return CLOSE_ENOUGH_CONTEXT
     return None
+
+
+def silence_since_last_member_ms(members, epoch_ms, end_offset_ms):
+    """How long the speaker has been quiet since the last member ended.
+
+    Measured against the audio actually processed so far, never a wall clock -- a slow drain or a
+    retried task must not look like a pause and close a group early.
+    """
+    if not members:
+        return 0
+    last = members[-1]
+    last_end_ms = last["timestamp_ms"] - epoch_ms + last["duration_ms"]
+    return max(0, end_offset_ms - last_end_ms)

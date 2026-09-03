@@ -88,3 +88,22 @@ class EmittedUtteranceTest(TestCase):
         feed(build_manager(emitted, verdicts=verdicts_for(*sections)), timeline(*sections))
 
         self.assertGreater(len(emitted[0]["audio_data"]), bytes_for_ms(200))
+
+
+class VoiceMeasurementTest(TestCase):
+    """The group needs to know how much real speech a clip carries, not just how long it is."""
+
+    def test_the_emitted_message_reports_how_much_of_it_was_speech(self):
+        emitted = []
+        sections = ((200, speech_frame), (2000, silent_frame))
+        feed(build_manager(emitted, verdicts=verdicts_for(*sections)), timeline(*sections))
+
+        self.assertEqual(emitted[0]["voice_ms"], 200)
+
+    def test_a_clip_broken_by_a_short_pause_counts_only_the_speech(self):
+        """Otherwise a group of pauses would look like a group full of conversation."""
+        emitted = []
+        sections = ((200, speech_frame), (1000, silent_frame), (300, speech_frame), (2000, silent_frame))
+        feed(build_manager(emitted, verdicts=verdicts_for(*sections)), timeline(*sections))
+
+        self.assertEqual(emitted[0]["voice_ms"], 500)
