@@ -25,7 +25,7 @@ from bots.local_audio_processing import (
     flush_remaining,
     offset_of_buffered,
 )
-from bots.local_utterance_group import close_reason, gaps_ms, silence_since_last_member_ms
+from bots.local_utterance_group import close_reason, gaps_seconds, silence_since_last_member_ms
 from bots.models import Bot, BotEventManager, BotEventTypes, BotStates, Participant, Recording, RecordingManager
 from bots.tasks.process_local_utterance_group_task import process_local_utterance_group
 
@@ -180,4 +180,4 @@ def _settle_group(client, bot_id, source, manager, epoch, end_offset_ms, session
     store.save_group(client, bot_id, source, [])
     utterance_ids = [member["utterance_id"] for member in members]
     logger.info(f"Local session {bot_id}/{source}: sending {len(utterance_ids)} utterance(s) as one request ({reason})")
-    process_local_utterance_group.delay(utterance_ids, gaps_ms(members))
+    process_local_utterance_group.delay(utterance_ids, gaps_seconds(members))
