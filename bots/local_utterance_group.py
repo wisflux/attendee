@@ -88,6 +88,18 @@ def gaps_ms(members):
     return gaps
 
 
+def gaps_seconds(members):
+    """The same pauses, in the unit every consumer of this list reads.
+
+    `get_mp3_for_utterance_group` multiplies each entry by bytes-per-SECOND and `utterance_windows`
+    advances its cursor by it, so milliseconds here write a 1250-second silence for a 1.25-second
+    pause. Both halves would agree on it -- every word would still land on its own row and every
+    row would keep the timestamp it was cut with -- and the only sign would be a model that hears
+    two sentences twenty minutes apart, which is the context this whole path exists to buy.
+    """
+    return [gap / 1000.0 for gap in gaps_ms(members)]
+
+
 def span_ms(members):
     """How much of the session's timeline the group covers, gaps included."""
     if not members:

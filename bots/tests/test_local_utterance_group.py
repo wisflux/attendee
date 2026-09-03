@@ -26,6 +26,7 @@ from bots.local_utterance_group import (
     TRIM_SILENCE_OVER_MS,
     close_reason,
     gaps_ms,
+    gaps_seconds,
     silence_since_last_member_ms,
 )
 
@@ -168,6 +169,19 @@ class GapsBetweenMembersTest(TestCase):
 
     def test_an_empty_group_has_no_gaps(self):
         self.assertEqual(gaps_ms([]), [])
+
+    def test_the_gap_is_offered_in_the_unit_its_consumer_reads(self):
+        """get_mp3_for_utterance_group multiplies this by bytes-per-SECOND, so milliseconds here
+        would write 1250 seconds of silence for a 1.25 second pause."""
+        group = members(1000, 1000, gap_ms=1250)
+
+        self.assertEqual(gaps_seconds(group), [1.25])
+
+    def test_seconds_and_milliseconds_describe_the_same_pauses(self):
+        """One list builds the audio and locates the words. Two units of it must not disagree."""
+        group = members(1000, 2000, 1500, gap_ms=800)
+
+        self.assertEqual(gaps_seconds(group), [gap / 1000.0 for gap in gaps_ms(group)])
 
     def test_there_is_one_gap_fewer_than_members(self):
         group = members(500, 500, 500, 500, gap_ms=200)
