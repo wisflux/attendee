@@ -111,7 +111,10 @@ class LocalAudioInputManager(PerParticipantNonStreamingAudioInputManager):
         keep = frames_without_trailing_silence(verdicts)
         if keep < frames:
             audio, verdicts = audio[: keep * frame_bytes], verdicts[:keep]
-        self._emit_utterance({**message, "audio_data": shorten_long_silences(audio, verdicts, self.sample_rate)})
+        # How much of the clip is real speech, so a group can tell a run of conversation from a
+        # run of pauses. Taken from the verdicts already recorded rather than measured again.
+        voice_ms = sum(verdicts) * VAD_FRAME_MS
+        self._emit_utterance({**message, "audio_data": shorten_long_silences(audio, verdicts, self.sample_rate), "voice_ms": voice_ms})
 
     def export_vad_state(self):
         """Handed to the Redis tail so the next drain resumes mid-stream, not cold."""
@@ -186,9 +189,11 @@ def create_utterance(recording, participant, message):
 
     Keyed by a deterministic source_uuid (a globally-unique column) so a task retry cannot
     duplicate an utterance it already wrote before failing.
-    """
-    from bots.tasks.process_utterance_task import process_utterance
 
+    Returns the row, or None when it already existed. Transcription is NOT dispatched here any
+    more: the drain gathers rows into a group and sends them as one request, so dispatching per
+    utterance would both transcribe it twice and clear the audio the group still needs.
+    """
     audio_data = message["audio_data"]
     sample_rate = message["sample_rate"]
     source_uuid = f"local:{recording.id}:{participant.uuid}:{message['timestamp_ms']}"
@@ -220,8 +225,8 @@ def create_utterance(recording, participant, message):
     )
 
     RecordingManager.set_recording_transcription_in_progress(recording)
-    process_utterance.delay(utterance.id)
-    logger.info(f"Local session {recording.bot.object_id}: queued utterance {utterance.id} ({audio_chunk.duration_ms}ms)")
+    logger.info(f"Local session {recording.bot.object_id}: cut utterance {utterance.id} ({audio_chunk.duration_ms}ms)")
+    return utterance
 
 
 def split_local_utterance(audio, sample_rate):
@@ -240,8 +245,26 @@ def split_local_utterance(audio, sample_rate):
 
 
 def build_manager(recording, participant, sample_rate, vad_state=None):
+    """The manager, with `group_members` collecting what it emitted during this drain.
+
+    Each member carries what the group decision needs -- how much of the clip was speech, how long
+    it is, where it sits, and why it ended -- so the drain never has to re-read the audio.
+    """
+    group_members = []
+
     def save_audio_chunk_callback(message):
-        create_utterance(recording, participant, message)
+        utterance = create_utterance(recording, participant, message)
+        if utterance is None:
+            return
+        group_members.append(
+            {
+                "utterance_id": utterance.id,
+                "voice_ms": message["voice_ms"],
+                "duration_ms": utterance.duration_ms,
+                "timestamp_ms": utterance.timestamp_ms,
+                "flush_reason": message["flush_reason"],
+            }
+        )
 
     def get_participant_callback(speaker_id):
         # Fixed for a local session; the manager only needs this to be non-None.
@@ -257,6 +280,7 @@ def build_manager(recording, participant, sample_rate, vad_state=None):
         should_print_diagnostic_info=False,
     )
     manager.split_at_size_limit = split_local_utterance
+    manager.group_members = group_members
     return manager
 
 

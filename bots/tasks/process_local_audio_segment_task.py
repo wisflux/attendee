@@ -25,7 +25,9 @@ from bots.local_audio_processing import (
     flush_remaining,
     offset_of_buffered,
 )
+from bots.local_utterance_group import close_reason, gaps_ms, silence_since_last_member_ms
 from bots.models import Bot, BotEventManager, BotEventTypes, BotStates, Participant, Recording, RecordingManager
+from bots.tasks.process_local_utterance_group_task import process_local_utterance_group
 
 logger = logging.getLogger(__name__)
 
@@ -136,8 +138,11 @@ def _drain(client, bot_id, source, is_final):
         # complete by finalize_local_session, after EVERY source has flushed -- doing it here
         # would let one source close the recording before the other's last utterance exists.
         flush_remaining(manager, source, epoch, end_offset_ms or 0)
+        _settle_group(client, bot_id, source, manager, epoch, end_offset_ms, session_ended=True)
         store.save_tail(client, bot_id, source, b"", None, None, last_sequence, sample_rate, manager.export_vad_state())
         return
+
+    _settle_group(client, bot_id, source, manager, epoch, end_offset_ms, session_ended=False)
 
     remaining = manager.utterances.get(source, b"")
     unconsumed = bytes(audio[consumed:])  # a partial frame we could not hand to the VAD yet
@@ -152,3 +157,27 @@ def _drain(client, bot_id, source, is_final):
         sample_rate,
         manager.export_vad_state(),
     )
+
+
+def _settle_group(client, bot_id, source, manager, epoch, end_offset_ms, session_ended):
+    """Add what this drain emitted to the source's group, and send it if it is ready.
+
+    Evaluated on EVERY drain rather than only when an utterance appears, because a speaker who
+    says three seconds and stops emits nothing further -- the group would otherwise wait for the
+    session to end. Silence keeps arriving from the desktop, so the drains keep coming.
+
+    Keyed by source, so mic and system never share a request.
+    """
+    members = store.load_group(client, bot_id, source) + manager.group_members
+    quiet_ms = silence_since_last_member_ms(members, int(epoch.timestamp() * 1000), end_offset_ms or 0)
+    reason = close_reason(members, quiet_ms, session_ended=session_ended)
+    if reason is None:
+        store.save_group(client, bot_id, source, members)
+        return
+
+    # Cleared BEFORE dispatch: the ids are already in the task, and leaving them here would let
+    # the next drain send the same utterances a second time.
+    store.save_group(client, bot_id, source, [])
+    utterance_ids = [member["utterance_id"] for member in members]
+    logger.info(f"Local session {bot_id}/{source}: sending {len(utterance_ids)} utterance(s) as one request ({reason})")
+    process_local_utterance_group.delay(utterance_ids, gaps_ms(members))

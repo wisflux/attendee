@@ -25,6 +25,7 @@ from bots.local_utterance_group import (
     TRIM_SILENCE_OVER_MS,
     close_reason,
     gaps_ms,
+    silence_since_last_member_ms,
 )
 
 SILENCE_LIMIT_FLUSH = "silence_limit"
@@ -151,3 +152,35 @@ class GapsBetweenMembersTest(TestCase):
         group = members(500, 500, 500, 500, gap_ms=200)
 
         self.assertEqual(len(gaps_ms(group)), len(group) - 1)
+
+
+class SilenceAfterGroupTest(TestCase):
+    """How long the speaker has been quiet since the last member ended.
+
+    This is what closes a group when somebody stops talking, so it is measured against the audio
+    actually processed so far rather than a wall clock -- a slow drain must not look like a pause.
+    """
+
+    EPOCH_MS = 1_700_000_000_000
+
+    def _members(self, *durations, gap_ms=0):
+        return members(*durations, gap_ms=gap_ms, start_ms=self.EPOCH_MS)
+
+    def test_silence_is_measured_from_the_end_of_the_last_member(self):
+        group = self._members(1000)
+
+        self.assertEqual(silence_since_last_member_ms(group, self.EPOCH_MS, end_offset_ms=4000), 3000)
+
+    def test_no_silence_while_audio_is_still_arriving_inside_the_last_member(self):
+        """A drain can process up to the middle of a clip; that is not a pause."""
+        group = self._members(1000)
+
+        self.assertEqual(silence_since_last_member_ms(group, self.EPOCH_MS, end_offset_ms=500), 0)
+
+    def test_an_empty_group_has_no_silence_to_report(self):
+        self.assertEqual(silence_since_last_member_ms([], self.EPOCH_MS, end_offset_ms=9000), 0)
+
+    def test_only_the_last_member_matters(self):
+        group = self._members(1000, 1000, gap_ms=500)
+
+        self.assertEqual(silence_since_last_member_ms(group, self.EPOCH_MS, end_offset_ms=4000), 1500)
