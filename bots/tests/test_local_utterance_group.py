@@ -16,12 +16,14 @@ from bots.local_utterance_group import (
     CLOSE_ENOUGH_CONTEXT,
     CLOSE_SESSION_ENDED,
     CLOSE_STOPPED_TALKING,
+    GAP_CAP_MS,
     MAX_BLOCK_MS,
     MIN_BLOCK_VOICE_MS,
     MIN_BOUNDARY_PAUSE_MS,
     STOPPED_TALKING_MS,
     TARGET_VOICE_MS,
     close_reason,
+    gaps_ms,
 )
 
 SILENCE_LIMIT_FLUSH = "silence_limit"
@@ -101,3 +103,41 @@ class GroupCloseReasonTest(TestCase):
         group = members(1000, 1000, gap_ms=MAX_BLOCK_MS)
 
         self.assertEqual(close_reason(group, silence_after_ms=0), CLOSE_CEILING)
+
+
+class GapsBetweenMembersTest(TestCase):
+    """How much silence is written between two utterances in one request.
+
+    Real gaps, not a fixed spacer: a 3s spacer reads to the model as a full stop and undoes the
+    context the group exists to buy. Zero would splice the end of one word onto the start of the
+    next. So the real pause is used, capped.
+    """
+
+    def test_the_gap_is_the_real_silence_between_them(self):
+        group = members(1000, 1000, gap_ms=400)
+
+        self.assertEqual(gaps_ms(group), [400])
+
+    def test_a_long_pause_is_capped(self):
+        """Past the cap the model hears a full stop, which is what grouping is avoiding."""
+        group = members(1000, 1000, gap_ms=9000)
+
+        self.assertEqual(gaps_ms(group), [GAP_CAP_MS])
+
+    def test_utterances_that_overlap_never_produce_negative_silence(self):
+        """Trimming and rounding can leave one row ending after the next begins."""
+        group = members(1000, 1000)
+        group[1]["timestamp_ms"] = group[0]["timestamp_ms"] + 500
+
+        self.assertEqual(gaps_ms(group), [0])
+
+    def test_a_single_utterance_has_no_gaps(self):
+        self.assertEqual(gaps_ms(members(1000)), [])
+
+    def test_an_empty_group_has_no_gaps(self):
+        self.assertEqual(gaps_ms([]), [])
+
+    def test_there_is_one_gap_fewer_than_members(self):
+        group = members(500, 500, 500, 500, gap_ms=200)
+
+        self.assertEqual(len(gaps_ms(group)), len(group) - 1)
