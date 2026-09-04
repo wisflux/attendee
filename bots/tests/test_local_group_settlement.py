@@ -14,7 +14,7 @@ from django.test import TestCase
 
 from bots import local_session_store as store
 from bots.local_utterance_group import STOPPED_TALKING_MS
-from bots.tasks.process_local_audio_segment_task import _settle_group
+from bots.tasks.process_local_audio_segment_task import LOCK_WAIT_RETRIES, _settle_group, finalize_local_session
 from bots.transcription_utils import utterance_windows
 
 DISPATCH_PATH = "bots.tasks.process_local_audio_segment_task.process_local_utterance_group"
@@ -138,3 +138,22 @@ class SettleGroupTest(TestCase):
 
         self.assertEqual(store.load_group(self.client, BOT_ID, "mic"), [])
         self.assertEqual(len(store.load_group(self.client, BOT_ID, "system")), 1)
+
+    def test_re_settling_a_source_that_already_flushed_sends_nothing(self):
+        """A retried finalize re-drains a source whose group has already gone. Waiting longer for
+        the lock only helps if arriving twice cannot transcribe the same audio twice."""
+        dispatch = self._settle("mic", [], end_offset_ms=1000, session_ended=True)
+
+        dispatch.delay.assert_not_called()
+
+
+class FinalizePatienceTest(TestCase):
+    """How long finalize will wait for a source's lock before giving up.
+
+    It competes with the drain queue, and a backlogged session held its lock for 90 seconds in
+    testing. Giving up left the recording unfinished until the idle reaper ran, ten minutes later.
+    """
+
+    def test_finalize_waits_out_a_busy_drain_queue(self):
+        self.assertEqual(finalize_local_session.max_retries, LOCK_WAIT_RETRIES)
+        self.assertGreaterEqual(LOCK_WAIT_RETRIES, 60)
