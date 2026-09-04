@@ -10,7 +10,7 @@ from unittest import mock
 from django.test import TransactionTestCase
 
 from bots.local_session_api_views import pending_utterance_count
-from bots.models import AudioChunk, Bot, Credentials, Organization, Participant, Project, Recording, RecordingStates, Utterance
+from bots.models import AudioChunk, Bot, Credentials, Organization, Participant, Project, Recording, RecordingStates, RecordingTranscriptionStates, Utterance
 from bots.tasks.process_local_utterance_group_task import process_local_utterance_group
 
 ELEVENLABS_PROVIDER = 7
@@ -84,6 +84,61 @@ class ProcessLocalUtteranceGroupTest(TransactionTestCase):
             process_local_utterance_group(self.ids, [0.6])
 
         send.assert_not_called()
+
+    def _finish_recording(self):
+        """The state finalize leaves behind: the recording is over, its words are not back yet.
+
+        Refreshed first because Recording carries an optimistic-lock version: a task run in the
+        same test has already saved the row, so this instance is stale.
+        """
+        self.recording.refresh_from_db()
+        self.recording.state = RecordingStates.COMPLETE
+        self.recording.save()
+
+    def test_the_session_is_marked_transcribed_once_the_last_group_lands(self):
+        """Nothing else notices this. set_recording_complete ran while these rows were still empty,
+        and the group path never calls process_utterance, which is what settles the state on the
+        bot path -- so the session would stay IN_PROGRESS forever and no summary would run."""
+        self._finish_recording()
+
+        with mock.patch(GROUP_PATH, return_value=(self._transcriptions(), None)):
+            process_local_utterance_group(self.ids, [0.6])
+
+        self.recording.refresh_from_db()
+        self.assertEqual(self.recording.transcription_state, RecordingTranscriptionStates.COMPLETE)
+
+    def test_a_session_still_recording_is_not_marked_transcribed(self):
+        """A group that closed on "stopped talking" must not declare the session over."""
+        with mock.patch(GROUP_PATH, return_value=(self._transcriptions(), None)):
+            process_local_utterance_group(self.ids, [0.6])
+
+        self.recording.refresh_from_db()
+        self.assertEqual(self.recording.transcription_state, RecordingTranscriptionStates.IN_PROGRESS)
+
+    def test_a_session_with_a_row_still_waiting_is_not_marked_transcribed(self):
+        """Another group is still in flight, and its row has no text yet."""
+        self._finish_recording()
+        self._utterance(UTTERANCE_MS * 4)
+
+        with mock.patch(GROUP_PATH, return_value=(self._transcriptions(), None)):
+            process_local_utterance_group(self.ids, [0.6])
+
+        self.recording.refresh_from_db()
+        self.assertEqual(self.recording.transcription_state, RecordingTranscriptionStates.IN_PROGRESS)
+
+    def test_a_replay_settles_a_session_a_crash_left_open(self):
+        """The rows were written and the task died before the state was settled. The replay returns
+        early because every row already has text -- it must still finish the session."""
+        with mock.patch(GROUP_PATH, return_value=(self._transcriptions(), None)):
+            process_local_utterance_group(self.ids, [0.6])
+        self._finish_recording()
+
+        with mock.patch(GROUP_PATH) as send:
+            process_local_utterance_group(self.ids, [0.6])
+
+        send.assert_not_called()
+        self.recording.refresh_from_db()
+        self.assertEqual(self.recording.transcription_state, RecordingTranscriptionStates.COMPLETE)
 
     def test_a_group_that_cannot_be_transcribed_falls_back_to_one_clip_at_a_time(self):
         """Degrade to today's behaviour rather than lose the speech."""
