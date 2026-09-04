@@ -78,9 +78,10 @@ class ScriptedDetector:
         return {"scripted": True}
 
 
-def build_manager(emitted, utterance_size_limit=None, verdicts=None):
+def build_manager(emitted, utterance_size_limit=None, verdicts=None, cached_verdicts=None):
     return LocalAudioInputManager(
         detector=ScriptedDetector(verdicts if verdicts is not None else [True] * 100000),
+        cached_verdicts=cached_verdicts,
         save_audio_chunk_callback=emitted.append,
         get_participant_callback=lambda _: {"participant_uuid": SPEAKER, "participant_full_name": "You"},
         sample_rate=SAMPLE_RATE,
