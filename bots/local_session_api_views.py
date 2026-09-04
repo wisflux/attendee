@@ -233,8 +233,13 @@ PENDING_UTTERANCES_HEADER = "X-Pending-Utterances"
 
 
 def pending_utterance_count(bot):
-    """Rows that exist but have no transcription yet -- the ones a caller cannot see."""
-    return Utterance.objects.filter(recording__bot=bot, transcription__isnull=True).count()
+    """Rows that exist but have no transcription yet -- the ones a caller cannot see.
+
+    A row whose transcription failed for good is not one of them: its words are never coming, and
+    counting it would hold the desktop on "Transcribing..." for the rest of the session. Same rule
+    the recording state machine uses for deciding what is still in progress.
+    """
+    return Utterance.objects.filter(recording__bot=bot, transcription__isnull=True, failure_data__isnull=True).count()
 
 
 class LocalSessionTranscriptView(TranscriptView):
