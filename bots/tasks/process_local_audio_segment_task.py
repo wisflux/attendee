@@ -26,6 +26,7 @@ from bots.local_audio_processing import (
     offset_of_buffered,
 )
 from bots.local_utterance_group import close_reason, gaps_seconds, silence_since_last_member_ms
+from bots.local_vad_verdict_cache import safe_cached_verdicts
 from bots.models import Bot, BotEventManager, BotEventTypes, BotStates, Participant, Recording, RecordingManager
 from bots.tasks.process_local_utterance_group_task import process_local_utterance_group
 
@@ -135,8 +136,15 @@ def _drain(client, bot_id, source, is_final):
         end_offset_ms = segment["offset_ms"] + duration_ms(segment["audio"], sample_rate)
         last_sequence = segment["sequence"]
 
+    # A verdict recorded for one of tail["audio"]'s frames on an earlier drain is a fixed fact,
+    # not something to ask the model again -- so it is handed back rather than re-decided. See
+    # local_vad_verdict_cache. Validated against the TAIL's own audio specifically (not the
+    # combined audio fed below): the cache can never legitimately cover more than that.
+    frame_bytes = sample_rate // 100 * BYTES_PER_SAMPLE
+    cached_verdicts = safe_cached_verdicts(tail["verdicts"], bytes(tail["audio"]), frame_bytes)
+
     epoch = bot.created_at.replace(tzinfo=None)
-    manager = build_manager(recording, participant, sample_rate, vad_state=tail["vad_state"])
+    manager = build_manager(recording, participant, sample_rate, vad_state=tail["vad_state"], cached_verdicts=cached_verdicts)
     consumed = feed(manager, source, bytes(audio), epoch, start_offset_ms or 0, sample_rate)
 
     if is_final:
@@ -145,7 +153,7 @@ def _drain(client, bot_id, source, is_final):
         # would let one source close the recording before the other's last utterance exists.
         flush_remaining(manager, source, epoch, end_offset_ms or 0)
         _settle_group(client, bot_id, source, manager, epoch, end_offset_ms, session_ended=True)
-        store.save_tail(client, bot_id, source, b"", None, None, last_sequence, sample_rate, manager.export_vad_state())
+        store.save_tail(client, bot_id, source, b"", None, None, last_sequence, sample_rate, manager.export_vad_state(), manager.buffered_verdicts(source))
         return
 
     _settle_group(client, bot_id, source, manager, epoch, end_offset_ms, session_ended=False)
@@ -162,6 +170,7 @@ def _drain(client, bot_id, source, is_final):
         last_sequence,
         sample_rate,
         manager.export_vad_state(),
+        manager.buffered_verdicts(source),
     )
 
 

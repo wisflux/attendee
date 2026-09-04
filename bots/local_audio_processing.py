@@ -15,6 +15,7 @@ from bots.bot_controller.per_participant_non_streaming_audio_input_manager impor
     PerParticipantNonStreamingAudioInputManager,
 )
 from bots.local_silero_vad import LocalSileroVad
+from bots.local_vad_verdict_cache import VerdictCache, verdicts_for_buffered
 from bots.models import AudioChunk, RecordingManager, Utterance
 
 logger = logging.getLogger(__name__)
@@ -65,13 +66,17 @@ class LocalAudioInputManager(PerParticipantNonStreamingAudioInputManager):
     Only the local path is affected. Meeting bots keep the shared implementation.
     """
 
-    def __init__(self, *, vad_state=None, detector=None, **kwargs):
+    def __init__(self, *, vad_state=None, detector=None, cached_verdicts=None, **kwargs):
         super().__init__(**kwargs)
         # `detector` exists for tests. Silero rejects every synthetic signal -- tones, noise,
         # formant stacks -- which is correct behaviour and makes it useless for driving the
         # manager's own logic, so those tests script the verdicts instead. Silero's accuracy
         # is measured on real audio by bots/e2e_tests/vad_report.py.
         self.vad = detector or LocalSileroVad(kwargs["sample_rate"], state=vad_state)
+        # A verdict already decided on an earlier drain is a fixed fact, not something to ask
+        # the model again -- so the still-open buffer's known verdicts are consulted first, and
+        # only genuinely new frames reach the detector. See local_vad_verdict_cache.
+        self._verdict_cache = VerdictCache(cached_verdicts)
         # One verdict per frame fed, so the emitted audio can be trimmed without asking the
         # detector twice. Reconciled against the audio's own length at emit time, because the
         # base class decides which frames actually enter the buffer.
@@ -82,12 +87,19 @@ class LocalAudioInputManager(PerParticipantNonStreamingAudioInputManager):
     def silence_detected(self, chunk_bytes):
         if not chunk_bytes:
             return True
-        speaking = self.vad.is_speech(chunk_bytes)
+        speaking = self._verdict_cache.next(lambda: self.vad.is_speech(chunk_bytes))
         self._verdicts.append(speaking)
         if speaking:
             return False
         self.diagnostic_info["total_chunks_marked_as_silent_due_to_vad"] += 1
         return True
+
+    def buffered_verdicts(self, source):
+        """Verdicts for whatever `source` still has open, unflushed -- for the next drain's
+        cache. See `local_vad_verdict_cache.verdicts_for_buffered`."""
+        frame_bytes = self.sample_rate // 100 * BYTES_PER_SAMPLE
+        buffered_frames = len(self.utterances.get(source, b"")) // frame_bytes
+        return verdicts_for_buffered(self._verdicts, buffered_frames)
 
     def _shorten_then_emit(self, message):
         """Drop the silence that closed the utterance, then shorten any long ones inside it.
@@ -244,7 +256,7 @@ def split_local_utterance(audio, sample_rate):
     return point
 
 
-def build_manager(recording, participant, sample_rate, vad_state=None):
+def build_manager(recording, participant, sample_rate, vad_state=None, cached_verdicts=None):
     """The manager, with `group_members` collecting what it emitted during this drain.
 
     Each member carries what the group decision needs -- how much of the clip was speech, how long
@@ -272,6 +284,7 @@ def build_manager(recording, participant, sample_rate, vad_state=None):
 
     manager = LocalAudioInputManager(
         vad_state=vad_state,
+        cached_verdicts=cached_verdicts,
         save_audio_chunk_callback=save_audio_chunk_callback,
         get_participant_callback=get_participant_callback,
         sample_rate=sample_rate,

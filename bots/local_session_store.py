@@ -98,14 +98,17 @@ def load_tail(client, bot_id, source):
             "last_sequence": -1,
             "sample_rate": None,
             "vad_state": None,
+            "verdicts": [],
         }
     payload = json.loads(raw)
     payload["audio"] = base64.b64decode(payload["audio"])
     payload.setdefault("vad_state", None)
+    # Absent on a tail saved before this existed, or on a session with nothing buffered yet.
+    payload.setdefault("verdicts", [])
     return payload
 
 
-def save_tail(client, bot_id, source, audio, started_offset_ms, end_offset_ms, last_sequence, sample_rate, vad_state=None):
+def save_tail(client, bot_id, source, audio, started_offset_ms, end_offset_ms, last_sequence, sample_rate, vad_state=None, verdicts=None):
     payload = {
         "audio": base64.b64encode(bytes(audio)).decode(),
         "started_offset_ms": started_offset_ms,
@@ -117,6 +120,9 @@ def save_tail(client, bot_id, source, audio, started_offset_ms, end_offset_ms, l
         # Silero is recurrent; without its state the next drain restarts cold and
         # mislabels roughly 13 seconds per 90 as silence. ~1.3KB.
         "vad_state": vad_state,
+        # One speech/silence flag per already-buffered frame, so the next drain does not have
+        # to ask the model again for audio it has already judged. See local_vad_verdict_cache.
+        "verdicts": verdicts or [],
     }
     client.set(tail_key(bot_id, source), json.dumps(payload), ex=TAIL_TTL_SECONDS)
 
