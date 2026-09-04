@@ -202,14 +202,22 @@ class PendingUtteranceCountTest(TransactionTestCase):
         )
         self.participant = Participant.objects.create(bot=self.bot, uuid="mic")
 
-    def _utterance(self, transcription=None):
+    def _utterance(self, transcription=None, failure_data=None):
         return Utterance.objects.create(
             recording=self.recording,
             participant=self.participant,
             timestamp_ms=0,
             duration_ms=UTTERANCE_MS,
             transcription=transcription,
+            failure_data=failure_data,
         )
+
+    def test_a_row_that_failed_for_good_is_not_counted(self):
+        """Its words are never coming. Counted, it would hold the desktop on "Transcribing..." for
+        the rest of the session -- which is what a bad key or an exhausted quota produced."""
+        self._utterance(failure_data={"reason": "transcription_request_failed"})
+
+        self.assertEqual(pending_utterance_count(self.bot), 0)
 
     def test_a_row_still_waiting_for_its_words_is_counted(self):
         self._utterance()
