@@ -20,7 +20,7 @@ spec:
         - name: regcred
       containers:
         - name: webpage-streamer
-          image: wisfluxp/attendee:a08c2968
+          image: wisfluxp/attendee:d2077d8d
           command: ["python", "bots/webpage_streamer/run_webpage_streamer.py"]
           ports:
             - containerPort: 8000
