@@ -31,6 +31,12 @@ from bots.tasks.process_local_utterance_group_task import process_local_utteranc
 
 logger = logging.getLogger(__name__)
 
+# How long finalize will wait out a busy drain queue, at one second per attempt. Five was not
+# enough: a backlogged session was measured holding its lock for 90 seconds, and a finalize that
+# gives up leaves the recording unfinished until the idle reaper runs, about ten minutes later. A
+# retry is rescheduled rather than held, so patience here occupies no worker.
+LOCK_WAIT_RETRIES = 60
+
 
 @shared_task(bind=True, soft_time_limit=300, autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
 def drain_local_session_audio(self, bot_id, source, is_final=False):
@@ -51,7 +57,7 @@ def drain_local_session_audio(self, bot_id, source, is_final=False):
         drain_local_session_audio.delay(bot_id, source)
 
 
-@shared_task(bind=True, soft_time_limit=300, autoretry_for=(Exception,), retry_backoff=True, max_retries=5)
+@shared_task(bind=True, soft_time_limit=300, autoretry_for=(Exception,), retry_backoff=True, max_retries=LOCK_WAIT_RETRIES)
 def finalize_local_session(self, bot_id):
     """Close a stopped session: flush every source's last utterance, then complete once.
 
